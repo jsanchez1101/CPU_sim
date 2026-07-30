@@ -1,0 +1,6 @@
+build/
+cpusim
+*.o
+*.csv
+.DS_Store
+compile_commands.json
