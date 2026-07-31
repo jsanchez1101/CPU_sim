@@ -83,6 +83,7 @@ void Core::cycle(uint64_t globalCycle) {
   if (memStall_ > 0) {
     --memStall_;
     ++st.stallMemory;
+    lastNote_ = "data memory stall";
     if (cfg_.trace) traceCycle(globalCycle);
     return;
   }
@@ -100,10 +101,36 @@ void Core::cycle(uint64_t globalCycle) {
   if (exit_ == Exit::Fault) return;
 
   if (!nxt_.idex.valid) ++st.bubbles;
+  lastNote_ = computeNote();
   if (cfg_.trace) traceCycle(globalCycle);
 
   cur_ = nxt_;
   nxt_ = Latches{};
+}
+
+const char* Core::computeNote() const {
+  if (memStall_ > 0) return "data memory stall";
+  if (stallIF_) return "load-use stall, IF/ID held";
+  if (ifStall_ > 0) return "instruction fetch stall";
+  if (flushedThisCycle_) return "branch mispredict, redirecting fetch";
+  if (!fetchOn_) return "draining before switch";
+  return "";
+}
+
+CoreSnapshot Core::snapshot() const {
+  CoreSnapshot s;
+  s.ifid = {cur_.ifid.valid, cur_.ifid.pc};
+  s.idex = {cur_.idex.valid, cur_.idex.in.pc};
+  s.exmem = {cur_.exmem.valid, cur_.exmem.in.pc};
+  s.memwb = {cur_.memwb.valid, cur_.memwb.in.pc};
+  s.nextPc = pc_;
+  if (cur_.exmem.valid &&
+      (isLoad(cur_.exmem.in.op) || isStore(cur_.exmem.in.op))) {
+    s.hasMemAccess = true;
+    s.memAddr = cur_.exmem.alu;
+    s.memIsStore = isStore(cur_.exmem.in.op);
+  }
+  return s;
 }
 
 // --- WB --------------------------------------------------------------------
@@ -386,19 +413,7 @@ void Core::traceCycle(uint64_t globalCycle) {
   }
   Instr ifInstr{};
   if (cur_.ifid.valid) ifInstr = decode(cur_.ifid.raw, cur_.ifid.pc);
-
-  const char* note = "";
-  if (memStall_ > 0) {
-    note = "data memory stall";
-  } else if (stallIF_) {
-    note = "load-use stall, IF/ID held";
-  } else if (ifStall_ > 0) {
-    note = "instruction fetch stall";
-  } else if (flushedThisCycle_) {
-    note = "branch mispredict, redirecting fetch";
-  } else if (!fetchOn_) {
-    note = "draining before switch";
-  }
+  const char* note = lastNote_.c_str();
 
   std::printf("%8llu  %-10s  %-22s %-22s %-22s %-22s  %s\n",
               static_cast<unsigned long long>(globalCycle),

@@ -10,6 +10,10 @@ microarchitectural decision *visible*: turn forwarding off and watch CPI double,
 shrink the cache and watch the same program take 45% longer, shrink physical
 memory and watch page faults eat the run.
 
+There is also an [interactive viewer](#interactive-viewer): record a run to JSON
+and step through it cycle by cycle in the browser, watching instructions move
+through the pipeline while the caches, TLB and page tables update.
+
 ```
 $ make && ./cpusim programs/matmul.asm
 ...
@@ -28,14 +32,16 @@ WHERE THE CYCLES WENT
 
 ```sh
 make              # builds ./cpusim
-make test         # builds and runs the test suite (181 assertions)
+make test         # runs the full test suite (229 assertions)
 make demo         # a couple of representative runs
+make traces       # regenerates the viewer's bundled demo trace
 
 # or with CMake
 cmake -B build && cmake --build build && ctest --test-dir build
 ```
 
-Needs only a C++17 compiler. No external dependencies.
+Needs only a C++17 compiler. No external dependencies. Node is optional and used
+only to test the viewer; `make test` skips those and still passes without it.
 
 ```sh
 ./cpusim programs/vector_add.asm                        # single process
@@ -44,6 +50,7 @@ Needs only a C++17 compiler. No external dependencies.
 ./cpusim --no-forwarding programs/hazard_chain.asm      # ablation
 ./cpusim --trace --fault-penalty 0 programs/fib.asm     # per-cycle pipeline view
 ./cpusim --csv out.csv programs/matmul.asm              # every counter as CSV
+./cpusim --emit-trace run.json programs/matmul.asm      # record for the viewer
 ./cpusim --help
 ```
 
@@ -134,6 +141,43 @@ on its own what explicit priorities have to be told:
 | priority, yielder favoured | 10474 | 10474 | 627 | 1 |
 | **mlfq** | **10128** | 10128 | **1030** | 4 |
 
+## Interactive viewer
+
+```sh
+./cpusim --emit-trace run.json programs/matmul.asm
+open viewer/index.html          # then drag run.json onto the page
+```
+
+`viewer/index.html` opens straight off disk with no server and no build step. It
+ships with a bundled trace of `fib.asm`, so opening it does something immediately;
+drop your own JSON on it to replace that.
+
+What it shows, all synchronised to the cycle you are looking at:
+
+* the five pipeline stages with the instruction in each, bubbles marked, and the
+  reason for any stall spelled out (`load-use stall, IF/ID held`)
+* the source listing with each stage's current PC highlighted in its own colour
+* the register file, with registers written this cycle flashed
+* both L1 caches as set × way grids, valid/dirty/tag per line, changes flashed
+* the TLB and the page table, showing pages faulting in and being evicted
+* running counters and the effective address of any load or store
+
+Controls: step forward and back a cycle at a time, play at four speeds, scrub the
+whole run, jump to a cycle number, and **run until** the next mispredict, page
+fault, eviction, cache miss, load-use stall or context switch — which is the fast
+way to find the interesting cycles in a 12,000-cycle run. Arrow keys step, shift
+steps by ten, space plays. With multiple processes you can pin the side panels to
+a process that is not currently running and watch its state sit frozen while the
+other one executes.
+
+**How it works.** The C++ side is a pure observer: `TraceRecorder` takes read-only
+snapshots once per cycle and writes only what changed since the previous cycle, so
+a 12,000-cycle run of `matmul` is about 1.5 MB rather than tens of megabytes. The
+viewer reconstructs the state at any cycle by replaying those deltas from the
+start, with keyframes every 500 records so seeking backwards stays instant. There
+is no second simulator: the browser never computes what the machine did, it only
+replays what the C++ recorded.
+
 ## Measured effect of each design decision
 
 All from the shipped programs, default configuration unless noted.
@@ -194,14 +238,31 @@ descending from `0x40000`.
 
 ## Tests
 
-`make test` runs 181 assertions covering encode/decode round trips, assembler
-layout and error handling, ALU semantics, the memory hierarchy, faults, all three
+`make test` runs 229 assertions across three suites.
+
+**`tests/test_sim.cpp` (181)** covers encode/decode round trips, assembler layout
+and error handling, ALU semantics, the memory hierarchy, faults, all three
 schedulers, and cycle accounting. Several are differential rather than absolute:
 they assert that enabling forwarding reduces cycles *without changing the
 result*, that a 64-byte stride misses far more than a 4-byte stride, and that a
 thrashing configuration still computes the same answer.
 
-One of them, `testBtbAliasingBetweenProcesses`, is a regression test for a bug
+**`viewer/verify_trace.js` (15)** proves a recorded trace actually reconstructs
+the run. The simulator writes its final register state into the trace directly
+from the `Process` objects; the verifier replays every delta from cycle zero and
+asserts it lands on exactly that state, that per-cycle counter deltas sum to the
+independently written totals, that seeking backwards through keyframes gives
+byte-identical state to replaying forwards, and that no page or TLB entry ever
+points outside physical memory.
+
+**`viewer/test_viewer.js` (33)** loads the real `index.html` in jsdom and drives
+it: asserts each stage box shows the instruction the trace says is there, that
+stepping forward then back returns identical DOM, that the scrubber and the
+run-until breakpoints land on cycles that genuinely contain the requested event,
+and that the register display matches the simulator's ground truth. It skips
+cleanly if node or jsdom is absent.
+
+One C++ test, `testBtbAliasingBetweenProcesses`, is a regression test for a bug
 this design invites. The BTB is shared between processes and indexed by PC with
 no tag, and every process's text starts at `0x1000` — so a `jmp` in one process
 can produce a BTB hit on a completely unrelated instruction in another. Because
@@ -229,11 +290,17 @@ Stated plainly, since a simulator that hides its approximations is not much use:
 ## Layout
 
 ```
-include/     isa.h assembler.h memory.h process.h pipeline.h scheduler.h simulator.h stats.h
+include/     isa.h assembler.h memory.h process.h pipeline.h scheduler.h
+             simulator.h stats.h trace.h
 src/         isa.cpp assembler.cpp memory.cpp pipeline.cpp scheduler.cpp
-             simulator.cpp report.cpp stats.cpp main.cpp
+             simulator.cpp report.cpp stats.cpp trace.cpp main.cpp
 programs/    assembly benchmarks
 tests/       test_sim.cpp
+viewer/      index.html      the viewer, opens off disk with no server
+             replay.js       delta replay engine, shared by page and tests
+             verify_trace.js trace correctness checks
+             test_viewer.js  DOM tests for the page
+             demo-trace.js   bundled fib.asm trace, regenerate with `make traces`
 ```
 
 Every performance counter is declared once, in an X-macro list in `stats.h`, so

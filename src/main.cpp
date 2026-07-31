@@ -39,6 +39,8 @@ void usage(const char* argv0) {
       "output\n"
       "  --max-cycles N             safety limit (default 20000000)\n"
       "  --csv FILE                 dump every counter as CSV\n"
+      "  --emit-trace FILE.json     record every cycle for viewer/index.html\n"
+      "  --trace-cycles N           cap the recorded cycles (default 50000)\n"
       "  --dump-mem ADDR:COUNT      print COUNT words starting at ADDR after the run\n"
       "  -h, --help                 this message\n",
       argv0, PAGE_SIZE);
@@ -116,6 +118,10 @@ int main(int argc, char** argv) {
       cfg.maxCycles = std::strtoull(needValue("--max-cycles"), nullptr, 10);
     } else if (arg == "--csv") {
       csvPath = needValue("--csv");
+    } else if (arg == "--emit-trace") {
+      cfg.tracePath = needValue("--emit-trace");
+    } else if (arg == "--trace-cycles") {
+      cfg.traceMaxCycles = std::strtoull(needValue("--trace-cycles"), nullptr, 10);
     } else if (arg == "--dump-mem") {
       const std::string spec = needValue("--dump-mem");
       const size_t colon = spec.find(':');
@@ -167,6 +173,19 @@ int main(int argc, char** argv) {
       } else {
         std::printf("  [0x%08x] <unmapped>\n", addr);
       }
+    }
+  }
+
+  if (!cfg.tracePath.empty()) {
+    if (sim.writeTrace()) {
+      const TraceRecorder* rec = sim.recorder();
+      std::printf("\nwrote %s (%llu cycles recorded%s)\n", cfg.tracePath.c_str(),
+                  static_cast<unsigned long long>(rec->recordCount()),
+                  rec->truncated() ? ", truncated -- raise --trace-cycles" : "");
+      std::printf("open viewer/index.html and load that file\n");
+    } else {
+      std::fprintf(stderr, "error: cannot write %s\n", cfg.tracePath.c_str());
+      return 1;
     }
   }
 

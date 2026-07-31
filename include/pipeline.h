@@ -64,9 +64,28 @@ struct MEMWB {
   uint32_t val = 0;
 };
 
+// Read-only view of the four latches plus the fetch PC, for the trace
+// recorder and the text trace.
+struct StageSlot {
+  bool valid = false;
+  uint32_t pc = 0;
+};
+
+struct CoreSnapshot {
+  StageSlot ifid, idex, exmem, memwb;
+  uint32_t nextPc = 0;
+  bool hasMemAccess = false;   // EX/MEM holds a load or store
+  uint32_t memAddr = 0;
+  bool memIsStore = false;
+};
+
 class Core {
  public:
   Core(MemorySystem& mem, const CoreConfig& cfg);
+
+  CoreSnapshot snapshot() const;
+  // Why the cycle that just ran stalled, or "" if it did not.
+  const std::string& lastNote() const { return lastNote_; }
 
   void attach(Process* p);
   Process* detach();
@@ -88,6 +107,7 @@ class Core {
   void fetchStage();
 
   bool forwardOperand(uint8_t reg, uint32_t* value);
+  const char* computeNote() const;
   uint32_t predictorIndex(uint32_t pc) const;
   void raiseFault(Fault f, uint32_t addr, const char* where);
   void traceCycle(uint64_t globalCycle);
@@ -115,6 +135,7 @@ class Core {
   Exit exit_ = Exit::Running;
   bool traceHeader_ = false;
   bool flushedThisCycle_ = false;
+  std::string lastNote_;
 
   std::vector<uint8_t> bht_;                      // 2-bit saturating counters
   std::unordered_map<uint32_t, uint32_t> btb_;    // pc -> last taken target

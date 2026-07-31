@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<!--
+  cpusim trace viewer -- a self-contained, dependency-free page that replays a
+  JSON trace produced by:
+
+      ./cpusim --emit-trace run.json programs/matmul.asm
+
+  The trace stores one record per cycle containing only what changed, so state
+  at an arbitrary cycle is reconstructed by replaying deltas from the start.
+  Keyframes every 500 records keep scrubbing responsive on long runs.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cpusim &mdash; pipeline viewer</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel2: #1d212c;
+    --line: #2a2f3d;
+    --text: #d6dae4;
+    --dim: #7d8598;
+    --accent: #6ea8fe;
+    --if: #4c8dff;
+    --id: #38b6a4;
+    --ex: #d9a441;
+    --mem: #c2678d;
+    --wb: #8b7bd8;
+    --bad: #e5646e;
+    --good: #4fb477;
+    --hot: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  h1 { font-size: 15px; margin: 0; letter-spacing: .5px; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--dim); margin: 0 0 8px; font-weight: 600;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header .sub { color: var(--dim); font-size: 12px; }
+  .spacer { flex: 1; }
+  button, select, input[type=text], input[type=number] {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); color: #07101f; border-color: var(--accent); font-weight: 700; }
+  label.file { display: inline-block; }
+  label.file input { display: none; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .cols {
+    display: grid; grid-template-columns: 290px minmax(420px, 1fr) 250px;
+    gap: 12px; padding: 12px; align-items: start;
+  }
+  .cols2 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 0 12px 12px; align-items: start; }
+  @media (max-width: 1200px) {
+    .cols { grid-template-columns: 1fr; }
+    .cols2 { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* pipeline */
+  .pipe { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .stage { background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 8px; min-height: 84px; }
+  .stage .nm { font-size: 10px; letter-spacing: .12em; font-weight: 700; margin-bottom: 6px; }
+  .stage .pc { color: var(--dim); font-size: 11px; }
+  .stage .ins { margin-top: 3px; word-break: break-word; }
+  .stage.empty .ins { color: var(--dim); font-style: italic; }
+  .stage.s-if { border-top: 3px solid var(--if); } .s-if .nm { color: var(--if); }
+  .stage.s-id { border-top: 3px solid var(--id); } .s-id .nm { color: var(--id); }
+  .stage.s-ex { border-top: 3px solid var(--ex); } .s-ex .nm { color: var(--ex); }
+  .stage.s-mem { border-top: 3px solid var(--mem); } .s-mem .nm { color: var(--mem); }
+  .stage.s-wb { border-top: 3px solid var(--wb); } .s-wb .nm { color: var(--wb); }
+
+  .note { margin-top: 10px; padding: 7px 10px; border-radius: 6px; background: var(--panel2); border-left: 3px solid var(--line); color: var(--dim); min-height: 32px; }
+  .note.active { border-left-color: var(--hot); color: var(--hot); }
+  .note .ev { color: var(--accent); }
+
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .timeline { margin-top: 10px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .tl-labels { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
+
+  /* code */
+  .code { max-height: 460px; overflow: auto; }
+  .code table { border-collapse: collapse; width: 100%; }
+  .code td { padding: 1px 5px; white-space: nowrap; }
+  .code td.a { color: var(--dim); font-size: 11px; }
+  .code tr.hl-if { background: color-mix(in srgb, var(--if) 26%, transparent); }
+  .code tr.hl-id { background: color-mix(in srgb, var(--id) 26%, transparent); }
+  .code tr.hl-ex { background: color-mix(in srgb, var(--ex) 26%, transparent); }
+  .code tr.hl-mem { background: color-mix(in srgb, var(--mem) 26%, transparent); }
+  .code tr.hl-wb { background: color-mix(in srgb, var(--wb) 26%, transparent); }
+  .code td.tagcol { color: var(--dim); font-size: 10px; text-align: right; }
+
+  /* registers */
+  .regs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; }
+  .reg { display: flex; justify-content: space-between; gap: 6px; padding: 2px 5px; border-radius: 4px; }
+  .reg .n { color: var(--dim); }
+  .reg.chg { background: color-mix(in srgb, var(--hot) 30%, transparent); color: #fff; }
+  .reg.zero .v { color: var(--dim); }
+
+  /* tables */
+  table.grid { border-collapse: collapse; width: 100%; font-size: 11px; }
+  table.grid th { text-align: left; color: var(--dim); font-weight: 600; padding: 2px 4px; border-bottom: 1px solid var(--line); }
+  table.grid td { padding: 1px 4px; border-bottom: 1px solid rgba(255,255,255,.03); }
+  .scroll { max-height: 210px; overflow: auto; }
+  .cell-v { color: var(--good); }
+  .cell-d { color: var(--hot); }
+  .cell-x { color: var(--dim); }
+  tr.chg > td { background: color-mix(in srgb, var(--hot) 22%, transparent); }
+
+  .stats div { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  .stats .k { color: var(--dim); }
+  .stats .big { font-size: 18px; color: #fff; }
+  .stats hr { border: 0; border-top: 1px solid var(--line); margin: 7px 0; }
+
+  .log { max-height: 210px; overflow: auto; font-size: 11px; }
+  .log div { padding: 1px 0; color: var(--dim); }
+  .log b { color: var(--text); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px; font-size: 11px; color: var(--dim); }
+  .chip b { color: var(--text); font-weight: 600; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 42px; text-align: center; color: var(--dim); margin: 40px auto; max-width: 620px; }
+  .drop.over { border-color: var(--accent); color: var(--accent); }
+  .drop code { color: var(--accent); }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>cpusim</h1>
+  <span class="sub" id="hdrSub">pipeline viewer</span>
+  <div class="spacer"></div>
+  <label class="file"><span><button type="button" onclick="this.closest('label').querySelector('input').click()">Load trace&hellip;</button></span><input type="file" id="fileIn" accept=".json"></label>
+</header>
+
+<div id="empty" class="drop">
+  <p><b>Drop a trace JSON here</b>, or use &ldquo;Load trace&hellip;&rdquo;.</p>
+  <p>Generate one with:<br><code>./cpusim --emit-trace run.json programs/matmul.asm</code></p>
+</div>
+
+<div id="app" class="hide">
+  <div class="cols">
+    <div class="panel">
+      <h2>Program <select id="procSel" style="float:right;padding:1px 6px"></select></h2>
+      <div class="code" id="code"></div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Pipeline &mdash; cycle <span id="cycNum" style="color:var(--text)">0</span> <span id="procName" style="float:right"></span></h2>
+        <div class="pipe">
+          <div class="stage s-if"  id="st0"><div class="nm">IF</div></div>
+          <div class="stage s-id"  id="st1"><div class="nm">ID</div></div>
+          <div class="stage s-ex"  id="st2"><div class="nm">EX</div></div>
+          <div class="stage s-mem" id="st3"><div class="nm">MEM</div></div>
+          <div class="stage s-wb"  id="st4"><div class="nm">WB</div></div>
+        </div>
+        <div class="note" id="note">&nbsp;</div>
+
+        <div class="controls">
+          <button id="btnStart" title="First cycle">&#124;&#9664;</button>
+          <button id="btnBack10" title="Back 10">&#9664;&#9664;</button>
+          <button id="btnBack" title="Back one cycle">&#9664;</button>
+          <button id="btnPlay" class="primary" title="Play / pause (space)">&#9654; Play</button>
+          <button id="btnFwd" title="Forward one cycle">&#9654;</button>
+          <button id="btnFwd10" title="Forward 10">&#9654;&#9654;</button>
+          <button id="btnEnd" title="Last cycle">&#9654;&#124;</button>
+          <select id="speed" title="Playback speed">
+            <option value="120">slow</option>
+            <option value="40" selected>normal</option>
+            <option value="8">fast</option>
+            <option value="0">max</option>
+          </select>
+          <span class="spacer"></span>
+          <select id="bpKind" title="Run until">
+            <option value="">run until&hellip;</option>
+            <option value="mispredicts">branch mispredict</option>
+            <option value="pageFaults">page fault</option>
+            <option value="pageEvictions">page eviction</option>
+            <option value="dcacheMisses">D-cache miss</option>
+            <option value="icacheMisses">I-cache miss</option>
+            <option value="stallLoadUse">load-use stall</option>
+            <option value="contextSwitches">context switch</option>
+            <option value="__event">scheduling event</option>
+            <option value="__stall">any stall</option>
+          </select>
+          <button id="btnRunTo">Go</button>
+          <input type="number" id="gotoCycle" placeholder="cycle" style="width:92px">
+          <button id="btnGoto">Jump</button>
+        </div>
+
+        <div class="timeline">
+          <input type="range" id="scrub" min="0" max="0" value="0">
+          <div class="tl-labels"><span>0</span><span id="tlEnd">0</span></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <h2>Configuration</h2>
+        <div class="chips" id="chips"></div>
+        <h2 style="margin-top:12px">Result</h2>
+        <div id="summary" style="color:var(--dim)"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Registers</h2>
+        <div class="regs" id="regs"></div>
+      </div>
+      <div class="panel stats" id="stats" style="margin-top:12px">
+        <h2>Counters</h2>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols2">
+    <div class="panel">
+      <h2>L1 D-cache <span id="dGeom" style="float:right;font-weight:400"></span></h2>
+      <div class="scroll"><table class="grid" id="dcache"></table></div>
+    </div>
+    <div class="panel">
+      <h2>L1 I-cache <span id="iGeom" style="float:right;font-weight:400"></span></h2>
+      <div class="scroll"><table class="grid" id="icache"></table></div>
+    </div>
+    <div class="panel">
+      <h2>TLB</h2>
+      <div class="scroll"><table class="grid" id="tlb"></table></div>
+    </div>
+    <div class="panel">
+      <h2>Page table <span id="ptProc" style="float:right;font-weight:400;color:var(--dim)"></span></h2>
+      <div class="scroll"><table class="grid" id="ptable"></table></div>
+      <h2 style="margin-top:10px">Event log</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="replay.js"></script>
+<!--
+  Optional bundled demo so the page is useful when opened straight off disk.
+  Browsers block fetch() over file://, so the trace is delivered as a script
+  that assigns window.CPUSIM_TRACE. Regenerate with `make traces`; if the file
+  is absent this simply does nothing.
+-->
+<script src="demo-trace.js" onerror="void 0"></script>
+<script>
+'use strict';
+
+const $ = id => document.getElementById(id);
+const hex = n => '0x' + (n >>> 0).toString(16).padStart(4, '0');
+const KEYFRAME_EVERY = 500;
+
+let T = null;            // the loaded trace
+let state = null;        // reconstructed machine state
+let idx = -1;            // index of the last applied record
+let keyframes = [];      // [{idx, state}]
+let playing = false;
+let timer = null;
+let codeRows = {};       // pid -> {pc -> <tr>}
+let regEls = [];
+let viewPid = 0;         // pid whose code listing is currently built
+let pinnedPid = null;    // set when the user picks a process explicitly
+
+/* ---------------------------------------------------------------- state --- */
+/* All delta semantics live in replay.js, shared with viewer/verify_trace.js. */
+
+function seek(target) {
+  const ctx = { state, idx, keyframes };
+  Replay.seekTo(T, ctx, target);
+  state = ctx.state;
+  idx = ctx.idx;
+  render();
+}
+
+/* --------------------------------------------------------------- render --- */
+
+function codeFor(pid) {
+  const p = T.processes.find(x => x.pid === pid);
+  return p ? p.code : {};
+}
+
+function insAt(pid, pc) {
+  const c = codeFor(pid);
+  return c[String(pc)] || null;
+}
+
+function buildCode(pid) {
+  const c = codeFor(pid);
+  const tbl = document.createElement('table');
+  codeRows[pid] = {};
+  const pcs = Object.keys(c).map(Number).sort((a, b) => a - b);
+  for (const pc of pcs) {
+    const tr = tbl.insertRow();
+    tr.insertCell().outerHTML = '<td class="a">' + hex(pc) + '</td>';
+    tr.insertCell().textContent = c[String(pc)];
+    tr.insertCell().outerHTML = '<td class="tagcol"></td>';
+    codeRows[pid][pc] = tr;
+  }
+  $('code').innerHTML = '';
+  $('code').appendChild(tbl);
+}
+
+const STAGE_KEYS = ['if', 'id', 'ex', 'mem', 'wb'];
+
+function render() {
+  const rec = state.rec || T.cycles[0];
+  // The pipeline always shows the process that is actually on the CPU; the
+  // side panels follow whichever process the user has selected, so another
+  // process's registers and page table can be inspected mid-run.
+  const runPid = rec.p || T.processes[0].pid;
+  const showPid = pinnedPid !== null ? pinnedPid : runPid;
+  const proc = state.procs[showPid] || { regs: new Array(16).fill(0), pt: new Map(), stats: {} };
+
+  $('cycNum').textContent = rec.c;
+  const nameOf = q => (T.processes.find(p => p.pid === q) || {}).name || '';
+  $('procName').innerHTML = '<span class="chip">running <b>' + nameOf(runPid) + '</b></span>' +
+    (showPid !== runPid ? ' <span class="chip">viewing <b>' + nameOf(showPid) + '</b></span>' : '');
+
+  // stages: IF is the PC about to be fetched; the rest come from the latches
+  const stagePcs = [rec.pc, rec.s[0], rec.s[1], rec.s[2], rec.s[3]];
+  for (let i = 0; i < 5; i++) {
+    const el = $('st' + i);
+    const pc = stagePcs[i];
+    const txt = pc === null || pc === undefined ? null : insAt(runPid, pc);
+    el.classList.toggle('empty', pc === null || pc === undefined);
+    let extra = '';
+    if (i === 3 && rec.a) {
+      extra = '<div class="pc">' + (rec.a[1] ? 'store &rarr; ' : 'load &larr; ') + hex(rec.a[0]) + '</div>';
+    }
+    el.innerHTML = '<div class="nm">' + STAGE_KEYS[i].toUpperCase() + '</div>' +
+      (pc === null || pc === undefined
+        ? '<div class="ins">bubble</div>'
+        : '<div class="pc">' + hex(pc) + '</div><div class="ins">' + (txt || '?') + '</div>' + extra);
+  }
+
+  const noteEl = $('note');
+  const parts = [];
+  if (rec.ev) parts.push('<span class="ev">' + rec.ev + '</span>');
+  if (rec.n) parts.push(rec.n);
+  noteEl.innerHTML = parts.join(' &middot; ') || '&nbsp;';
+  noteEl.classList.toggle('active', !!(rec.n || rec.ev));
+
+  // code highlight
+  if (viewPid !== showPid) { viewPid = showPid; $('procSel').value = String(showPid); buildCode(showPid); }
+  const rows = codeRows[showPid] || {};
+  for (const tr of Object.values(rows)) {
+    tr.className = '';
+    tr.cells[2].textContent = '';
+  }
+  // Stage PCs only mean something in the listing of the running process.
+  if (showPid === runPid) {
+    for (let i = 0; i < 5; i++) {
+      const pc = stagePcs[i];
+      if (pc === null || pc === undefined) continue;
+      const tr = rows[pc];
+      if (!tr) continue;
+      tr.className = 'hl-' + STAGE_KEYS[i];
+      tr.cells[2].textContent = (tr.cells[2].textContent ? tr.cells[2].textContent + ' ' : '') + STAGE_KEYS[i].toUpperCase();
+    }
+  }
+  const active = rows[stagePcs[2]] || rows[stagePcs[1]];
+  if (active && active.scrollIntoViewIfNeeded) active.scrollIntoViewIfNeeded();
+
+  // registers
+  const names = ['zero','r1','r2','r3','r4','r5','r6','r7','r8','r9','r10','r11','r12','r13','sp','ra'];
+  for (let i = 0; i < 16; i++) {
+    const el = regEls[i];
+    const v = proc.regs[i] >>> 0;
+    const sv = v > 0x7fffffff ? (v - 0x100000000) : v;
+    el.className = 'reg' + (state.touched.regs.has(i) ? ' chg' : '') + (v === 0 ? ' zero' : '');
+    el.innerHTML = '<span class="n">' + names[i] + '</span><span class="v">' + sv + '</span>';
+    el.title = hex(v);
+  }
+
+  renderStats(rec, proc);
+  renderCache('dcache', state.dcache, T.geometry.dcacheSets, T.geometry.dcacheWays, state.touched.dcache);
+  renderCache('icache', state.icache, T.geometry.icacheSets, T.geometry.icacheWays, state.touched.icache);
+  renderTlb();
+  renderPageTable(showPid, proc);
+
+  $('scrub').value = String(idx < 0 ? 0 : idx);
+}
+
+function pct(a, b) { return b ? (100 * a / b).toFixed(1) + '%' : '0.0%'; }
+
+function renderStats(rec, proc) {
+  const s = proc.stats;
+  const g = k => s[k] || 0;
+  const cyc = rec.c || 1;
+  const rows = [
+    ['retired', g('instructions')],
+    ['CPI', g('instructions') ? (g('cycles') / g('instructions')).toFixed(2) : '-'],
+    null,
+    ['forwards', g('forwards')],
+    ['load-use stalls', g('stallLoadUse')],
+    ['data hazard stalls', g('stallDataHazard')],
+    ['mem stall cycles', g('stallMemory')],
+    ['fetch stall cycles', g('stallFetch')],
+    null,
+    ['branches', g('branches')],
+    ['mispredicts', g('mispredicts') + ' (' + pct(g('mispredicts'), g('branches')) + ')'],
+    null,
+    ['L1D miss', g('dcacheMisses') + '/' + g('dcacheAccesses') + ' (' + pct(g('dcacheMisses'), g('dcacheAccesses')) + ')'],
+    ['L1I miss', g('icacheMisses') + '/' + g('icacheAccesses') + ' (' + pct(g('icacheMisses'), g('icacheAccesses')) + ')'],
+    ['writebacks', g('writebacks')],
+    null,
+    ['TLB miss', g('tlbMisses') + '/' + g('tlbAccesses') + ' (' + pct(g('tlbMisses'), g('tlbAccesses')) + ')'],
+    ['page faults', g('pageFaults')],
+    ['evictions', g('pageEvictions')],
+    ['ctx switches', g('contextSwitches')],
+  ];
+  let html = '<h2>Counters</h2><div><span class="k">cycle</span><span class="big">' + cyc + '</span></div><hr>';
+  for (const r of rows) {
+    if (r === null) { html += '<hr>'; continue; }
+    html += '<div><span class="k">' + r[0] + '</span><span>' + r[1] + '</span></div>';
+  }
+  $('stats').innerHTML = html;
+}
+
+function renderCache(elId, lines, sets, ways, touched) {
+  let html = '<tr><th>set</th>';
+  for (let w = 0; w < ways; w++) html += '<th>way ' + w + '</th>';
+  html += '</tr>';
+  for (let i = 0; i < sets; i++) {
+    let any = false, cells = '';
+    for (let w = 0; w < ways; w++) {
+      const flat = i * ways + w;
+      const l = lines[flat] || { valid: 0, dirty: 0, tag: 0 };
+      if (touched.has(flat)) any = true;
+      cells += '<td class="' + (l.valid ? (l.dirty ? 'cell-d' : 'cell-v') : 'cell-x') + '">' +
+        (l.valid ? 'tag ' + l.tag + (l.dirty ? ' D' : '') : '&mdash;') + '</td>';
+    }
+    html += '<tr class="' + (any ? 'chg' : '') + '"><td class="cell-x">' + i + '</td>' + cells + '</tr>';
+  }
+  $(elId).innerHTML = html;
+}
+
+function renderTlb() {
+  let html = '<tr><th>#</th><th>pid</th><th>vpn</th><th>frame</th></tr>';
+  state.tlb.forEach((e, i) => {
+    html += '<tr class="' + (state.touched.tlb.has(i) ? 'chg' : '') + '"><td class="cell-x">' + i + '</td>' +
+      (e.valid
+        ? '<td>' + e.pid + '</td><td>' + e.vpn + '</td><td class="cell-v">' + e.frame + '</td>'
+        : '<td colspan="3" class="cell-x">&mdash;</td>') + '</tr>';
+  });
+  $('tlb').innerHTML = html;
+}
+
+function renderPageTable(pid, proc) {
+  $('ptProc').textContent = (T.processes.find(p => p.pid === pid) || {}).name || '';
+  let html = '<tr><th>vpn</th><th>range</th><th>frame</th><th>state</th></tr>';
+  const vpns = [...proc.pt.keys()].sort((a, b) => a - b);
+  for (const vpn of vpns) {
+    const e = proc.pt.get(vpn);
+    const base = vpn * T.geometry.pageSize;
+    html += '<tr class="' + (state.touched.pt.has(pid + ':' + vpn) ? 'chg' : '') + '">' +
+      '<td>' + vpn + '</td><td class="cell-x">' + hex(base) + '</td>' +
+      '<td>' + (e.valid ? e.frame : '&mdash;') + '</td>' +
+      '<td class="' + (e.valid ? (e.dirty ? 'cell-d' : 'cell-v') : 'cell-x') + '">' +
+      (e.valid ? (e.dirty ? 'resident, dirty' : 'resident') : 'swapped out') + '</td></tr>';
+  }
+  if (!vpns.length) html += '<tr><td colspan="4" class="cell-x">no pages touched yet</td></tr>';
+  $('ptable').innerHTML = html;
+}
+
+/* -------------------------------------------------------------- controls --- */
+
+function step(n) { stop(); seek(idx + n); }
+
+function play() {
+  if (playing) return stop();
+  playing = true;
+  $('btnPlay').innerHTML = '&#10073;&#10073; Pause';
+  const delay = Number($('speed').value);
+  const tick = () => {
+    if (!playing) return;
+    if (idx >= T.cycles.length - 1) return stop();
+    seek(idx + 1);
+    timer = setTimeout(tick, delay);
+  };
+  tick();
+}
+
+function stop() {
+  playing = false;
+  $('btnPlay').innerHTML = '&#9654; Play';
+  if (timer) { clearTimeout(timer); timer = null; }
+}
+
+// Advance to the next cycle matching the selected condition.
+function runTo() {
+  stop();
+  const kind = $('bpKind').value;
+  if (!kind) return;
+  for (let i = idx + 1; i < T.cycles.length; i++) {
+    const r = T.cycles[i];
+    let hit = false;
+    if (kind === '__event') hit = !!r.ev;
+    else if (kind === '__stall') hit = !!r.n;
+    else hit = (r.d || []).some(([, name]) => name === kind);
+    if (hit) { seek(i); flashNote(); return; }
+  }
+  $('note').innerHTML = 'no further match for <b>' + kind.replace('__', '') + '</b>';
+}
+
+function flashNote() {
+  const n = $('note');
+  n.style.transition = 'none';
+  n.style.background = 'color-mix(in srgb, var(--hot) 30%, transparent)';
+  setTimeout(() => { n.style.transition = 'background .6s'; n.style.background = ''; }, 0);
+}
+
+function addLog() {
+  const html = T.cycles.filter(r => r.ev).slice(0, 400)
+    .map(r => '<div><b>' + r.c + '</b> &middot; ' + r.ev + '</div>').join('');
+  $('log').innerHTML = html || '<div>no scheduling events</div>';
+}
+
+/* ------------------------------------------------------------------ load --- */
+
+function load(json) {
+  T = json;
+  if (!T.cycles || !T.cycles.length) { alert('trace has no cycles'); return; }
+  $('empty').classList.add('hide');
+  $('app').classList.remove('hide');
+
+  $('hdrSub').textContent = T.cycles.length + ' cycles recorded' + (T.truncated ? ' (truncated)' : '');
+  $('chips').innerHTML = T.config.map(([k, v]) => '<span class="chip">' + k + ' <b>' + v + '</b></span>').join('');
+  $('summary').innerHTML = T.summary.map(([n, s]) => '<div><b style="color:var(--text)">' + n + '</b>: ' + s + '</div>').join('');
+  $('dGeom').textContent = T.geometry.dcacheSets + '×' + T.geometry.dcacheWays + ', ' + T.geometry.lineSize + 'B';
+  $('iGeom').textContent = T.geometry.icacheSets + '×' + T.geometry.icacheWays + ', ' + T.geometry.lineSize + 'B';
+
+  $('procSel').innerHTML = T.processes.map(p => '<option value="' + p.pid + '">' + p.name + '</option>').join('');
+  $('scrub').max = String(T.cycles.length - 1);
+  $('tlEnd').textContent = T.cycles[T.cycles.length - 1].c;
+
+  $('regs').innerHTML = '';
+  regEls = [];
+  for (let i = 0; i < 16; i++) {
+    const d = document.createElement('div');
+    d.className = 'reg';
+    $('regs').appendChild(d);
+    regEls.push(d);
+  }
+
+  codeRows = {};
+  pinnedPid = null;
+  viewPid = -1;
+  keyframes = Replay.buildKeyframes(T, KEYFRAME_EVERY);
+  state = Replay.createState(T);
+  idx = -1;
+  addLog();
+  seek(0);
+}
+
+function readFile(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    try { load(JSON.parse(fr.result)); }
+    catch (e) { alert('could not parse trace: ' + e.message); }
+  };
+  fr.readAsText(file);
+}
+
+$('fileIn').addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+document.addEventListener('dragover', e => { e.preventDefault(); $('empty').classList.add('over'); });
+document.addEventListener('dragleave', () => $('empty').classList.remove('over'));
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  $('empty').classList.remove('over');
+  if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+});
+
+$('btnPlay').onclick = play;
+$('btnFwd').onclick = () => step(1);
+$('btnBack').onclick = () => step(-1);
+$('btnFwd10').onclick = () => step(10);
+$('btnBack10').onclick = () => step(-10);
+$('btnStart').onclick = () => { stop(); seek(0); };
+$('btnEnd').onclick = () => { stop(); seek(T.cycles.length - 1); };
+$('btnRunTo').onclick = runTo;
+$('bpKind').onchange = () => { if ($('bpKind').value) runTo(); };
+$('scrub').oninput = e => { stop(); seek(Number(e.target.value)); };
+$('btnGoto').onclick = () => {
+  const want = Number($('gotoCycle').value);
+  let best = 0;
+  for (let i = 0; i < T.cycles.length; i++) { if (T.cycles[i].c <= want) best = i; else break; }
+  stop(); seek(best);
+};
+$('procSel').onchange = e => { pinnedPid = Number(e.target.value); viewPid = -1; render(); };
+
+document.addEventListener('keydown', e => {
+  if (!T || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === ' ') { e.preventDefault(); play(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); step(e.shiftKey ? 10 : 1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); step(e.shiftKey ? -10 : -1); }
+  else if (e.key === 'Home') { stop(); seek(0); }
+  else if (e.key === 'End') { stop(); seek(T.cycles.length - 1); }
+});
+
+// Auto-load, in order of preference: an explicit ?trace= URL (needs http), then
+// the bundled demo trace (works over file://).
+const auto = new URLSearchParams(location.search).get('trace');
+if (auto) {
+  fetch(auto).then(r => r.json()).then(load).catch(() => {
+    if (window.CPUSIM_TRACE) load(window.CPUSIM_TRACE);
+  });
+} else if (window.CPUSIM_TRACE) {
+  load(window.CPUSIM_TRACE);
+}
+</script>
+</body>
+</html>

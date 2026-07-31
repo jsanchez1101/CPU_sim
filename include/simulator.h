@@ -12,6 +12,7 @@
 #include "process.h"
 #include "scheduler.h"
 #include "stats.h"
+#include "trace.h"
 
 namespace cpusim {
 
@@ -22,6 +23,10 @@ struct SimConfig {
   uint64_t quantum = 200;
   uint64_t contextSwitchPenalty = 20;
   uint64_t maxCycles = 20'000'000;
+  // When non-empty, every cycle is recorded and written here as JSON for the
+  // interactive viewer.
+  std::string tracePath;
+  uint64_t traceMaxCycles = 50'000;
 };
 
 class Simulator {
@@ -40,6 +45,9 @@ class Simulator {
   // Sum of every process's counters plus the simulator-level ones.
   Stats totals() const;
 
+  const TraceRecorder* recorder() const { return tracer_.get(); }
+  bool writeTrace() const;
+
  private:
   bool allTerminated() const;
 
@@ -48,12 +56,14 @@ class Simulator {
   Core core_;
   std::unique_ptr<Scheduler> sched_;
   std::vector<std::unique_ptr<Process>> procs_;
+  std::unique_ptr<TraceRecorder> tracer_;
   uint32_t nextPid_ = 1;
   uint64_t cycles_ = 0;
   uint64_t switchCycles_ = 0;
   uint64_t switchCount_ = 0;
   uint32_t lastPid_ = 0;
   bool hitLimit_ = false;
+  std::string pendingEvent_;
 };
 
 void printReport(const Simulator& sim);

@@ -76,6 +76,27 @@ struct AccessResult {
 
 const char* faultName(Fault f);
 
+// Read-only views used by the trace recorder. Kept as plain structs so the
+// observer never touches simulator internals.
+struct CacheLineView {
+  bool valid = false;
+  bool dirty = false;
+  uint32_t tag = 0;
+  bool operator==(const CacheLineView& o) const {
+    return valid == o.valid && dirty == o.dirty && tag == o.tag;
+  }
+};
+
+struct TlbEntryView {
+  bool valid = false;
+  uint32_t pid = 0;
+  uint32_t vpn = 0;
+  uint32_t frame = 0;
+  bool operator==(const TlbEntryView& o) const {
+    return valid == o.valid && pid == o.pid && vpn == o.vpn && frame == o.frame;
+  }
+};
+
 // ---------------------------------------------------------------------------
 
 class Cache {
@@ -89,6 +110,10 @@ class Cache {
 
   void invalidateFrame(uint32_t frame);
   const std::string& label() const { return label_; }
+
+  uint32_t sets() const { return sets_; }
+  uint32_t ways() const { return ways_; }
+  std::vector<CacheLineView> view() const;
 
  private:
   struct Line {
@@ -118,6 +143,7 @@ class Tlb {
   void insert(uint32_t pid, uint32_t vpn, PTE* pte);
   void invalidate(uint32_t pid, uint32_t vpn);
   void flush();
+  std::vector<TlbEntryView> view() const;
 
  private:
   struct Entry {
@@ -159,6 +185,10 @@ class MemorySystem {
   const MemConfig& config() const { return cfg_; }
   uint32_t framesInUse() const { return framesInUse_; }
   uint32_t frameCount() const { return cfg_.frames; }
+
+  std::vector<CacheLineView> icacheView() const { return icache_.view(); }
+  std::vector<CacheLineView> dcacheView() const { return dcache_.view(); }
+  std::vector<TlbEntryView> tlbView() const { return tlb_.view(); }
 
  private:
   struct Translation {

@@ -18,7 +18,42 @@ Simulator::Simulator(const SimConfig& cfg)
     : cfg_(cfg),
       mem_(cfg.mem),
       core_(mem_, cfg.core),
-      sched_(makeScheduler(cfg.policy, cfg.quantum)) {}
+      sched_(makeScheduler(cfg.policy, cfg.quantum)) {
+  if (cfg_.tracePath.empty()) return;
+  TraceMeta meta;
+  meta.icacheSets = cfg_.mem.icacheSets;
+  meta.icacheWays = cfg_.mem.icacheWays;
+  meta.dcacheSets = cfg_.mem.dcacheSets;
+  meta.dcacheWays = cfg_.mem.dcacheWays;
+  meta.lineSize = cfg_.mem.lineSize;
+  meta.tlbEntries = cfg_.mem.tlbEntries;
+  meta.frames = cfg_.mem.frames;
+  meta.config = {
+      {"scheduler", policyName(cfg_.policy)},
+      {"quantum", std::to_string(cfg_.quantum) + " cycles"},
+      {"context switch cost", std::to_string(cfg_.contextSwitchPenalty) + " cycles"},
+      {"forwarding", cfg_.core.forwarding ? "enabled" : "disabled"},
+      {"branch prediction", cfg_.core.predictor ? "2-bit counters + BTB"
+                                                : "static predict-not-taken"},
+      {"L1I", std::to_string(cfg_.mem.icacheSets) + " sets x " +
+                  std::to_string(cfg_.mem.icacheWays) + " ways"},
+      {"L1D", std::to_string(cfg_.mem.dcacheSets) + " sets x " +
+                  std::to_string(cfg_.mem.dcacheWays) + " ways"},
+      {"line size", std::to_string(cfg_.mem.lineSize) + " B"},
+      {"TLB", std::to_string(cfg_.mem.tlbEntries) + " entries"},
+      {"physical memory", std::to_string(cfg_.mem.frames) + " frames (" +
+                              std::to_string(cfg_.mem.frames * PAGE_SIZE / 1024) +
+                              " KiB)"},
+      {"miss penalty", std::to_string(cfg_.mem.missPenalty) + " cycles"},
+      {"page fault penalty", std::to_string(cfg_.mem.pageFaultPenalty) + " cycles"},
+  };
+  tracer_ = std::make_unique<TraceRecorder>(std::move(meta), cfg_.traceMaxCycles);
+}
+
+bool Simulator::writeTrace() const {
+  if (tracer_ == nullptr) return false;
+  return tracer_->write(cfg_.tracePath);
+}
 
 Process* Simulator::load(const Program& prog, int priority) {
   auto proc = std::make_unique<Process>();
@@ -47,6 +82,7 @@ Process* Simulator::load(const Program& prog, int priority) {
 
   p->state = ProcState::Ready;
   sched_->admit(p);
+  if (tracer_ != nullptr) tracer_->addProcess(*p, prog);
   procs_.push_back(std::move(proc));
   return p;
 }
@@ -61,9 +97,15 @@ bool Simulator::allTerminated() const {
 void Simulator::run() {
   while (cycles_ < cfg_.maxCycles) {
     if (core_.current() == nullptr) {
-      if (allTerminated()) return;
+      if (allTerminated()) {
+        if (tracer_ != nullptr) tracer_->finish(cycles_, mem_, procs_);
+        return;
+      }
       Process* next = sched_->pick(cycles_);
-      if (next == nullptr) return;  // nothing runnable and nothing to wait for
+      if (next == nullptr) {
+        if (tracer_ != nullptr) tracer_->finish(cycles_, mem_, procs_);
+        return;  // nothing runnable and nothing to wait for
+      }
 
       if (lastPid_ != 0 && lastPid_ != next->pid) {
         // Pay for the switch: pipeline was already drained, now flush the TLB
@@ -75,16 +117,29 @@ void Simulator::run() {
         ++next->stats.contextSwitches;
         next->stats.contextSwitchCycles += cfg_.contextSwitchPenalty;
       }
+      const bool switched = lastPid_ != next->pid;
       lastPid_ = next->pid;
       if (!next->started) {
         next->started = true;
         next->firstRunCycle = cycles_;
       }
       core_.attach(next);
+      if (tracer_ != nullptr) {
+        pendingEvent_ = (switched ? "scheduled " : "resumed ") + next->name;
+      }
+    }
+
+    if (tracer_ != nullptr) {
+      tracer_->snapshot(cycles_, core_, mem_, procs_);
+      if (!pendingEvent_.empty()) {
+        tracer_->note(cycles_, pendingEvent_);
+        pendingEvent_.clear();
+      }
     }
 
     core_.cycle(cycles_);
     ++cycles_;
+    if (tracer_ != nullptr) tracer_->annotate(core_.lastNote());
 
     Process* running = core_.current();
     if (running == nullptr) continue;
@@ -119,6 +174,7 @@ void Simulator::run() {
     }
   }
   hitLimit_ = true;
+  if (tracer_ != nullptr) tracer_->finish(cycles_, mem_, procs_);
 }
 
 Stats Simulator::totals() const {

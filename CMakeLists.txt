@@ -10,6 +10,7 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 add_library(cpusim_core
+  src/trace.cpp
   src/isa.cpp
   src/assembler.cpp
   src/memory.cpp

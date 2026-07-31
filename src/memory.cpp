@@ -82,6 +82,15 @@ uint32_t Cache::access(uint32_t paddr, bool isWrite, const MemConfig& cfg,
   return cost;
 }
 
+std::vector<CacheLineView> Cache::view() const {
+  std::vector<CacheLineView> out;
+  out.reserve(lines_.size());
+  for (const Line& l : lines_) {
+    out.push_back({l.valid, l.dirty, l.tag});
+  }
+  return out;
+}
+
 void Cache::invalidateFrame(uint32_t frame) {
   const uint32_t lo = frame * PAGE_SIZE;
   const uint32_t hi = lo + PAGE_SIZE;
@@ -153,6 +162,16 @@ void Tlb::invalidate(uint32_t pid, uint32_t vpn) {
 
 void Tlb::flush() {
   for (Entry& e : table_) e.valid = false;
+}
+
+std::vector<TlbEntryView> Tlb::view() const {
+  std::vector<TlbEntryView> out;
+  out.reserve(table_.size());
+  for (const Entry& e : table_) {
+    out.push_back({e.valid, e.pid, e.vpn,
+                   e.pte != nullptr ? e.pte->frame : 0});
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
