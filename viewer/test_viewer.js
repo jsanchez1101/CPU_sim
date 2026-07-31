@@ -208,6 +208,43 @@ for (const kind of kinds) {
         'run-until ' + kind + ' lands on a matching cycle', 'landed at cycle ' + at);
 }
 
+// The two stall-skipping modes: from inside a long stall they must jump past
+// it, not step one cycle. This is the fix for "the demo is frozen for 400
+// cycles and there is no way through it".
+const stallStart = trace.cycles.findIndex((r, i) =>
+  r.n && i + 40 < trace.cycles.length && trace.cycles[i + 40].n);
+if (stallStart >= 0) {
+  const matcher = {
+    __retire: r => (r.d || []).some(([, n]) => n === 'instructions'),
+    __running: r => !r.n,
+  };
+  for (const [mode, want] of [['__retire', 'retires'], ['__running', 'runs']]) {
+    // A short trace can be entirely stalled (a cold start that never gets to
+    // run), in which case staying put and reporting no match is correct.
+    const exists = trace.cycles.slice(stallStart + 1).some(matcher[mode]);
+    if (!exists) continue;
+    window.seek(stallStart);
+    doc.getElementById('bpKind').value = mode;
+    doc.getElementById('btnRunTo').click();
+    const at = Number(doc.getElementById('cycNum').textContent);
+    const landed = trace.cycles.find(r => r.c === at);
+    check(landed && matcher[mode](landed),
+          'run-until "' + want + '" escapes a stall to a valid cycle',
+          'landed at cycle ' + at);
+    check(at > Number(trace.cycles[stallStart].c), 'run-until "' + want + '" moves forward');
+  }
+}
+
+// The activity strip classifies every cycle; the legend must reflect what is
+// actually in the trace.
+check(doc.getElementById('stripLegend').children.length > 0, 'activity strip legend rendered');
+const marker = doc.getElementById('stripMark');
+window.seek(0);
+const leftAtStart = marker.style.left;
+window.seek(trace.cycles.length - 1);
+check(marker.style.left !== leftAtStart, 'activity strip marker tracks position');
+check(parseFloat(marker.style.left) === 100, 'marker reaches the end of the strip');
+
 // Process switcher, when the trace has more than one process.
 if (trace.processes.length > 1) {
   const sel = doc.getElementById('procSel');

@@ -92,9 +92,15 @@ for (const [k, v] of Object.entries(declared)) {
   const key = k;
   if (skip.has(key)) continue;
   const got = replayed[key] || 0;
-  if (got !== v) mismatched.push(key + ': replay ' + got + ' vs totals ' + v);
+  // A truncated trace holds a prefix of the run while `totals` describes all of
+  // it, so the deltas can only be expected to account for part of each counter.
+  if (T.truncated ? got > v : got !== v) {
+    mismatched.push(key + ': replay ' + got + ' vs totals ' + v);
+  }
 }
-check(mismatched.length === 0, 'per-cycle deltas sum to the declared totals',
+check(mismatched.length === 0,
+      T.truncated ? 'per-cycle deltas stay within the declared totals (truncated trace)'
+                  : 'per-cycle deltas sum to the declared totals',
       mismatched.slice(0, 6).join('; '));
 
 check(T.cycles[T.cycles.length - 1].c <= declared.cycles,

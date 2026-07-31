@@ -32,7 +32,7 @@ WHERE THE CYCLES WENT
 
 ```sh
 make              # builds ./cpusim
-make test         # runs the full test suite (229 assertions)
+make test         # runs the full test suite (236 assertions)
 make demo         # a couple of representative runs
 make traces       # regenerates the viewer's bundled demo trace
 
@@ -149,8 +149,10 @@ open viewer/index.html          # then drag run.json onto the page
 ```
 
 `viewer/index.html` opens straight off disk with no server and no build step. It
-ships with a bundled trace of `fib.asm`, so opening it does something immediately;
-drop your own JSON on it to replace that.
+ships with the first 2000 cycles of `matmul.asm`, so opening it does something
+immediately; drop your own JSON on it to replace that. `--trace-cycles N` caps
+long runs, and a truncated trace stays internally consistent — its recorded
+final state describes the last cycle actually recorded, not the end of the run.
 
 What it shows, all synchronised to the cycle you are looking at:
 
@@ -164,11 +166,25 @@ What it shows, all synchronised to the cycle you are looking at:
 
 Controls: step forward and back a cycle at a time, play at four speeds, scrub the
 whole run, jump to a cycle number, and **run until** the next mispredict, page
-fault, eviction, cache miss, load-use stall or context switch — which is the fast
-way to find the interesting cycles in a 12,000-cycle run. Arrow keys step, shift
-steps by ten, space plays. With multiple processes you can pin the side panels to
-a process that is not currently running and watch its state sit frozen while the
-other one executes.
+fault, eviction, cache miss, load-use stall, context switch, retired instruction,
+or simply the next cycle that isn't stalled. Arrow keys step, shift steps by ten,
+space plays. With multiple processes you can pin the side panels to a process
+that is not currently running and watch its state sit frozen while the other one
+executes.
+
+Under the scrubber is an **activity strip**: one column per slice of the run,
+coloured by what the pipeline was doing. It makes the shape of a run obvious
+before you scrub into it — a cold start appears as a solid block of fetch and
+memory stall before any green. Click anywhere on it to jump there.
+
+That cold start is worth understanding, because it dominates short programs. Text
+and data pages are demand-paged, so the first instruction fetch and the first
+data access each take a page fault. At the default 200-cycle penalty that is
+roughly 430 cycles before the program is properly running. `fib` only retires 170
+instructions, so **61% of its run is those two compulsory faults** — real
+behaviour, and exactly what the bottleneck analysis reports, but it means a short
+program tells you very little about the pipeline. Use a longer program, or pass
+`--fault-penalty 0` to look at pipeline behaviour in isolation.
 
 **How it works.** The C++ side is a pure observer: `TraceRecorder` takes read-only
 snapshots once per cycle and writes only what changed since the previous cycle, so
@@ -238,7 +254,7 @@ descending from `0x40000`.
 
 ## Tests
 
-`make test` runs 229 assertions across three suites.
+`make test` runs 236 assertions across three suites.
 
 **`tests/test_sim.cpp` (181)** covers encode/decode round trips, assembler layout
 and error handling, ALU semantics, the memory hierarchy, faults, all three
@@ -255,12 +271,12 @@ independently written totals, that seeking backwards through keyframes gives
 byte-identical state to replaying forwards, and that no page or TLB entry ever
 points outside physical memory.
 
-**`viewer/test_viewer.js` (33)** loads the real `index.html` in jsdom and drives
+**`viewer/test_viewer.js` (40)** loads the real `index.html` in jsdom and drives
 it: asserts each stage box shows the instruction the trace says is there, that
-stepping forward then back returns identical DOM, that the scrubber and the
-run-until breakpoints land on cycles that genuinely contain the requested event,
-and that the register display matches the simulator's ground truth. It skips
-cleanly if node or jsdom is absent.
+stepping forward then back returns identical DOM, that the scrubber, activity
+strip and run-until breakpoints land on cycles that genuinely contain the
+requested event, and that the register display matches the simulator's ground
+truth. It skips cleanly if node or jsdom is absent.
 
 One C++ test, `testBtbAliasingBetweenProcesses`, is a regression test for a bug
 this design invites. The BTB is shared between processes and indexed by PC with

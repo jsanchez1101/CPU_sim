@@ -91,6 +91,18 @@
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .tl-labels { display: flex; justify-content: space-between; color: var(--dim); font-size: 11px; }
 
+  /* activity strip: one column per slice of the run, coloured by what the
+     pipeline was doing, so long stalls are obvious before you scrub into them */
+  .strip-wrap { position: relative; margin-top: 6px; cursor: pointer; }
+  #strip { display: block; width: 100%; height: 16px; border-radius: 3px; }
+  #stripMark {
+    position: absolute; top: -2px; bottom: -2px; width: 2px; background: #fff;
+    box-shadow: 0 0 4px rgba(255,255,255,.8); pointer-events: none; left: 0;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 11px; color: var(--dim); }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
   /* code */
   .code { max-height: 460px; overflow: auto; }
   .code table { border-collapse: collapse; width: 100%; }
@@ -187,6 +199,8 @@
           <span class="spacer"></span>
           <select id="bpKind" title="Run until">
             <option value="">run until&hellip;</option>
+            <option value="__retire">next instruction retires</option>
+            <option value="__running">next cycle of real work</option>
             <option value="mispredicts">branch mispredict</option>
             <option value="pageFaults">page fault</option>
             <option value="pageEvictions">page eviction</option>
@@ -205,6 +219,11 @@
         <div class="timeline">
           <input type="range" id="scrub" min="0" max="0" value="0">
           <div class="tl-labels"><span>0</span><span id="tlEnd">0</span></div>
+          <div class="strip-wrap" id="stripWrap">
+            <canvas id="strip"></canvas>
+            <div id="stripMark"></div>
+          </div>
+          <div class="legend" id="stripLegend"></div>
         </div>
       </div>
 
@@ -393,6 +412,7 @@ function render() {
   renderPageTable(showPid, proc);
 
   $('scrub').value = String(idx < 0 ? 0 : idx);
+  updateMark();
 }
 
 function pct(a, b) { return b ? (100 * a / b).toFixed(1) + '%' : '0.0%'; }
@@ -511,6 +531,8 @@ function runTo() {
     let hit = false;
     if (kind === '__event') hit = !!r.ev;
     else if (kind === '__stall') hit = !!r.n;
+    else if (kind === '__running') hit = !r.n;
+    else if (kind === '__retire') hit = (r.d || []).some(([, name]) => name === 'instructions');
     else hit = (r.d || []).some(([, name]) => name === kind);
     if (hit) { seek(i); flashNote(); return; }
   }
@@ -522,6 +544,69 @@ function flashNote() {
   n.style.transition = 'none';
   n.style.background = 'color-mix(in srgb, var(--hot) 30%, transparent)';
   setTimeout(() => { n.style.transition = 'background .6s'; n.style.background = ''; }, 0);
+}
+
+/* --------------------------------------------------------- activity strip --- */
+
+// Each recorded cycle falls into one of these buckets, keyed by the stall note
+// the simulator attached. Drawing them across the timeline makes the shape of a
+// run legible at a glance: a cold start shows up as a solid block of fetch and
+// memory stall before any real work begins.
+const CATS = [
+  { key: 'run',   color: '#4fb477', label: 'running' },
+  { key: 'mem',   color: '#c2678d', label: 'data memory stall' },
+  { key: 'fetch', color: '#4c8dff', label: 'fetch stall' },
+  { key: 'hazard',color: '#ffd166', label: 'load-use stall' },
+  { key: 'flush', color: '#e5646e', label: 'mispredict flush' },
+  { key: 'drain', color: '#7d8598', label: 'draining / idle' },
+];
+const CAT_INDEX = Object.fromEntries(CATS.map((c, i) => [c.key, i]));
+
+function categorise(rec) {
+  const n = rec.n || '';
+  if (!n) return 'run';
+  if (n.startsWith('data memory')) return 'mem';
+  if (n.startsWith('instruction fetch')) return 'fetch';
+  if (n.startsWith('load-use')) return 'hazard';
+  if (n.startsWith('branch mispredict')) return 'flush';
+  return 'drain';
+}
+
+function drawStrip() {
+  const canvas = $('strip');
+  const wrap = $('stripWrap');
+  const cssW = Math.max(1, wrap.clientWidth);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(16 * dpr);
+  // Legend first: it is useful even where the canvas cannot be drawn.
+  $('stripLegend').innerHTML = CATS
+    .filter(c => T.cycles.some(r => categorise(r) === c.key))
+    .map(c => '<span><i style="background:' + c.color + '"></i>' + c.label + '</span>')
+    .join('');
+
+  const ctx = canvas.getContext && canvas.getContext('2d');
+  if (!ctx) return;  // no 2d context (e.g. jsdom): everything else still works
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const n = T.cycles.length;
+  const cols = Math.round(cssW);
+  for (let x = 0; x < cols; x++) {
+    const lo = Math.floor(x * n / cols);
+    const hi = Math.max(lo + 1, Math.floor((x + 1) * n / cols));
+    const counts = new Array(CATS.length).fill(0);
+    for (let i = lo; i < hi && i < n; i++) counts[CAT_INDEX[categorise(T.cycles[i])]]++;
+    let best = 0;
+    for (let c = 1; c < counts.length; c++) if (counts[c] > counts[best]) best = c;
+    ctx.fillStyle = CATS[best].color;
+    ctx.fillRect(Math.round(x * dpr), 0, Math.ceil(dpr), canvas.height);
+  }
+}
+
+function updateMark() {
+  const n = T.cycles.length;
+  const pos = n > 1 ? (Math.max(0, idx) / (n - 1)) * 100 : 0;
+  $('stripMark').style.left = pos + '%';
 }
 
 function addLog() {
@@ -564,6 +649,7 @@ function load(json) {
   state = Replay.createState(T);
   idx = -1;
   addLog();
+  drawStrip();
   seek(0);
 }
 
@@ -602,6 +688,14 @@ $('btnGoto').onclick = () => {
   stop(); seek(best);
 };
 $('procSel').onchange = e => { pinnedPid = Number(e.target.value); viewPid = -1; render(); };
+$('stripWrap').onclick = e => {
+  if (!T) return;
+  const rect = $('stripWrap').getBoundingClientRect();
+  const frac = rect.width ? (e.clientX - rect.left) / rect.width : 0;
+  stop();
+  seek(Math.round(frac * (T.cycles.length - 1)));
+};
+window.addEventListener('resize', () => { if (T) { drawStrip(); updateMark(); } });
 
 document.addEventListener('keydown', e => {
   if (!T || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;

@@ -55,8 +55,13 @@ demo: $(BIN)
 # Bundled demo trace for viewer/index.html. Delivered as a .js assignment
 # rather than .json so the page works when opened directly off disk, where
 # browsers refuse fetch() on file:// URLs.
+#
+# matmul rather than a short program: anything that retires only a couple of
+# hundred instructions is dominated by its two cold-start page faults (400
+# cycles), which makes a poor first impression for a pipeline viewer. Capped
+# at 2000 cycles to keep the bundled file small.
 traces: $(BIN)
-	$(BIN) --emit-trace $(BUILD)/demo.json programs/fib.asm > /dev/null
+	$(BIN) --emit-trace $(BUILD)/demo.json --trace-cycles 2000 programs/matmul.asm > /dev/null
 	printf 'window.CPUSIM_TRACE = ' > viewer/demo-trace.js
 	cat $(BUILD)/demo.json >> viewer/demo-trace.js
 	printf ';\n' >> viewer/demo-trace.js

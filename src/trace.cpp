@@ -147,7 +147,18 @@ void TraceRecorder::snapshot(uint64_t cycle, const Core& core,
                              const MemorySystem& mem,
                              const std::vector<std::unique_ptr<Process>>& procs) {
   if (records_.size() >= maxCycles_) {
-    truncated_ = true;
+    if (!truncated_) {
+      truncated_ = true;
+      // finalRegs always means "state at the last recorded cycle". Snapshots
+      // are taken before a cycle runs, so `procs` is already one cycle ahead of
+      // the last record; prev_ is what that record actually left behind.
+      finalRegs_.clear();
+      for (const auto& p : procs) {
+        auto it = prev_.find(p->pid);
+        finalRegs_.emplace_back(p->pid,
+                                it != prev_.end() ? it->second.regs : p->regs);
+      }
+    }
     return;
   }
   const Process* running = core.current();
@@ -203,8 +214,10 @@ void TraceRecorder::finish(uint64_t totalCycles, const MemorySystem& mem,
   finalTotals_ = Stats{};
   for (const auto& p : procs) finalTotals_.merge(p->stats);
   finalTotals_.cycles = totalCycles;
-  finalRegs_.clear();
-  for (const auto& p : procs) finalRegs_.emplace_back(p->pid, p->regs);
+  if (!truncated_) {
+    finalRegs_.clear();
+    for (const auto& p : procs) finalRegs_.emplace_back(p->pid, p->regs);
+  }
   for (const auto& p : procs) {
     std::ostringstream os;
     os << stateName(p->state) << ", " << p->stats.instructions
