@@ -1,22 +1,25 @@
 # cpusim
 
-A cycle-level CPU simulator in C++17. It runs real programs written for a small
-custom instruction set through an in-order 5-stage pipeline, a virtual memory
-system with demand paging, and a pluggable process scheduler — then reports where
-every cycle went and which part of the machine is the bottleneck.
+**A cycle-accurate CPU simulator in C++17** — an in-order 5-stage pipeline,
+virtual memory with demand paging, and three process schedulers. It runs real
+programs and reports where every cycle went and which part of the machine is the
+bottleneck.
 
-The point of the project is not to be fast. It is to make the cost of a
-microarchitectural decision *visible*: turn forwarding off and watch CPI double,
-shrink the cache and watch the same program take 45% longer, shrink physical
-memory and watch page faults eat the run.
+The point is not to be fast. It is to make the cost of a microarchitectural
+decision *measurable*.
 
-There is also an [interactive viewer](#interactive-viewer): record a run to JSON
-and step through it cycle by cycle in the browser, watching instructions move
-through the pipeline while the caches, TLB and page tables update.
+|  |  |
+| --- | --- |
+| **Pipeline** | 5 stages, operand forwarding, load-use hazard detection, 2-bit branch predictor + BTB, precise faults |
+| **Memory** | per-process page tables, pid-tagged TLB, demand paging with FIFO eviction and swap, set-associative write-back L1 I/D caches |
+| **OS** | round-robin / priority / MLFQ scheduling, pipeline-drained context switching |
+| **Measured** | forwarding worth **1.96×** · cache line size worth **2.36×** · MLFQ cuts interactive turnaround **5.1×** |
+| **Tested** | 253 assertions, 3 suites, plus a mutation-verified invariant checker across 91 configurations |
+| **Tooling** | zero-dependency browser viewer that replays a run cycle by cycle |
+| **Size** | ~4,300 lines of C++ (plus a 1,300-line viewer), no external dependencies |
 
 ```
 $ make && ./cpusim programs/matmul.asm
-...
 ==============================================================================
 WHERE THE CYCLES WENT
 ------------------------------------------------------------------------------
@@ -26,7 +29,23 @@ WHERE THE CYCLES WENT
   load-use hazard stalls                 507    4.1%
   branch mispredict flushes              192    1.6%
   pipeline fill / other bubbles          236    1.9%
+
+BOTTLENECK ANALYSIS
+------------------------------------------------------------------------------
+  * Largest single overhead: data memory stalls (4% of all cycles).
 ```
+
+There is also an [interactive viewer](#interactive-viewer): record a run to JSON
+and step through it in the browser, watching instructions move through the
+pipeline while the caches, TLB and page tables update.
+
+<!-- Add a screenshot of viewer/index.html here -- it is the single highest-value
+     thing you can put in this README. Save it as docs/viewer.png and uncomment:
+![The cycle-by-cycle pipeline viewer](docs/viewer.png)
+-->
+
+Start with [ARCHITECTURE.md](ARCHITECTURE.md) if you want to know how it works
+internally, or [What is modelled](#what-is-modelled) below for the design.
 
 ## Build and run
 
