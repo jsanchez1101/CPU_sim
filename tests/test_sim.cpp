@@ -390,6 +390,74 @@ void testDemandPagingAndEviction() {
   CHECK(b.proc->faultMessage.empty());
 }
 
+void testWarmStartRemovesColdFaults() {
+  beginCase("warm start removes compulsory faults without changing results");
+  SimConfig cold;
+  SimConfig warm;
+  warm.prefault = true;
+
+  Run c = runSource(kLoadUseProgram, cold);
+  Run w = runSource(kLoadUseProgram, warm);
+
+  CHECK_EQ(c.proc->regs[4], 72u);
+  CHECK_EQ(w.proc->regs[4], 72u);            // warm start is a timing knob only
+  CHECK(c.proc->stats.pageFaults > 0);
+  CHECK_EQ(w.proc->stats.pageFaults, 0u);
+  CHECK_EQ(w.proc->stats.pageFaultCycles, 0u);
+  CHECK(w.sim->cycles() < c.sim->cycles());
+  CHECK_EQ(w.proc->stats.instructions, c.proc->stats.instructions);
+
+  // Only paging is skipped: the caches and the TLB are still walked exactly as
+  // many times, so warm start cannot be hiding memory accesses.
+  CHECK_EQ(w.proc->stats.dcacheAccesses, c.proc->stats.dcacheAccesses);
+  CHECK_EQ(w.proc->stats.icacheAccesses, c.proc->stats.icacheAccesses);
+  CHECK_EQ(w.proc->stats.tlbAccesses, c.proc->stats.tlbAccesses);
+  CHECK(w.proc->stats.tlbMisses > 0);        // still a cold TLB
+}
+
+void testWarmStartUnderMemoryPressure() {
+  beginCase("warm start degrades to demand paging when memory is too small");
+  const char* prog =
+      ".data\n"
+      "buf: .space 12288\n"           // three pages, plus a text page
+      ".text\n"
+      "main:\n"
+      "  la   r1, buf\n"
+      "  li   r2, 0\n"
+      "  li   r3, 24\n"
+      "  li   r5, 0\n"
+      "  li   r8, 3\n"
+      "loop:\n"
+      "  bge  r2, r3, done\n"
+      "  slli r4, r2, 9\n"
+      "  add  r6, r1, r4\n"
+      "  sw   r8, 0(r6)\n"
+      "  lw   r7, 0(r6)\n"
+      "  add  r5, r5, r7\n"
+      "  addi r2, r2, 1\n"
+      "  j    loop\n"
+      "done:\n"
+      "  halt\n";
+
+  SimConfig roomy;
+  roomy.prefault = true;
+  SimConfig tight;
+  tight.prefault = true;
+  tight.mem.frames = 2;               // cannot hold the whole image
+
+  Run a = runSource(prog, roomy);
+  Run b = runSource(prog, tight);
+
+  CHECK_EQ(a.proc->regs[5], 72u);
+  CHECK_EQ(b.proc->regs[5], 72u);     // correct either way
+  CHECK_EQ(a.proc->stats.pageFaults, 0u);
+  // Warming must never evict to make room, so the pages it could not map are
+  // simply demand paged as before.
+  CHECK(b.proc->stats.pageFaults > 0);
+  CHECK(b.proc->faultMessage.empty());
+  CHECK(b.sim->cycles() > a.sim->cycles());
+}
+
 void testTlbCounters() {
   beginCase("TLB counts a lookup per access and misses on cold pages");
   Run r = runSource(
@@ -694,6 +762,8 @@ int main() {
   testBranchPredictorHelps();
   testCachePatternMatters();
   testDemandPagingAndEviction();
+  testWarmStartRemovesColdFaults();
+  testWarmStartUnderMemoryPressure();
   testTlbCounters();
   testSegmentationFault();
   testMisalignedAccess();

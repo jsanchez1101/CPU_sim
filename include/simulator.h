@@ -23,6 +23,9 @@ struct SimConfig {
   uint64_t quantum = 200;
   uint64_t contextSwitchPenalty = 20;
   uint64_t maxCycles = 20'000'000;
+  // Warm start: map text and data resident at load time, so measurements
+  // reflect steady state rather than compulsory cold-start faults.
+  bool prefault = false;
   // When non-empty, every cycle is recorded and written here as JSON for the
   // interactive viewer.
   std::string tracePath;

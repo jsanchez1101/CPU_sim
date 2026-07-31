@@ -48,6 +48,9 @@ void printReport(const Simulator& sim) {
   std::printf("  penalties          cache miss %u, writeback %u, TLB miss %u, page fault %u\n",
               cfg.mem.missPenalty, cfg.mem.writebackPenalty,
               cfg.mem.tlbMissPenalty, cfg.mem.pageFaultPenalty);
+  std::printf("  start              %s\n",
+              cfg.prefault ? "warm -- text and data preloaded, no compulsory faults"
+                           : "cold -- demand paged on first touch");
 
   std::printf("\n");
   rule('=');

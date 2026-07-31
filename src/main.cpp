@@ -35,6 +35,8 @@ void usage(const char* argv0) {
       "  --dcache SETSxWAYS         L1D geometry (default 32x2)\n"
       "  --miss-penalty N           cycles to fill a line (default 12)\n"
       "  --fault-penalty N          cycles to service a page fault (default 200)\n"
+      "  --prefault                 warm start: map text and data resident up front,\n"
+      "                             so no compulsory cold-start faults occur\n"
       "\n"
       "output\n"
       "  --max-cycles N             safety limit (default 20000000)\n"
@@ -112,6 +114,8 @@ int main(int argc, char** argv) {
       }
     } else if (arg == "--miss-penalty") {
       cfg.mem.missPenalty = static_cast<uint32_t>(std::strtoul(needValue("--miss-penalty"), nullptr, 10));
+    } else if (arg == "--prefault") {
+      cfg.prefault = true;
     } else if (arg == "--fault-penalty") {
       cfg.mem.pageFaultPenalty = static_cast<uint32_t>(std::strtoul(needValue("--fault-penalty"), nullptr, 10));
     } else if (arg == "--max-cycles") {

@@ -30,6 +30,8 @@ CONFIGS=(
   "--line 128"                        # coarse lines
   "--tlb 2"                           # constant TLB pressure
   "--miss-penalty 0 --fault-penalty 0"  # all memory latency removed
+  "--prefault"                        # warm start, no compulsory faults
+  "--prefault --frames 2"             # warm start that cannot fit, falls back
   "--quantum 7"                       # preempt constantly, mid-pipeline
   "--sched mlfq --quantum 13"          # different scheduler and quantum
 )

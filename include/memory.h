@@ -173,6 +173,14 @@ class MemorySystem {
   void loadIntoBackingStore(Process& p, uint32_t va,
                             const std::vector<uint8_t>& bytes, bool writable);
 
+  // Warm start: maps every page that already has backing-store content into a
+  // frame at zero cost, modelling a process whose text and data are already
+  // resident. Pages with no stored content -- stack and heap -- are anonymous
+  // and still fault in on first touch, exactly as they would for a warm
+  // process. Stops early rather than evicting if physical memory fills, so the
+  // remainder simply falls back to demand paging. Returns pages mapped.
+  uint32_t prefault(Process& p);
+
   AccessResult fetch32(Process& p, uint32_t va, uint32_t* out);
   AccessResult read32(Process& p, uint32_t va, uint32_t* out);
   AccessResult write32(Process& p, uint32_t va, uint32_t value);

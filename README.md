@@ -32,10 +32,10 @@ WHERE THE CYCLES WENT
 
 ```sh
 make              # builds ./cpusim
-make test         # runs the full test suite (236 assertions)
+make test         # runs the full test suite (253 assertions)
 make demo         # a couple of representative runs
 make traces       # regenerates the viewer's bundled demo trace
-make invariants   # results must not depend on microarchitecture (77 comparisons)
+make invariants   # results must not depend on microarchitecture (91 comparisons)
 
 # or with CMake
 cmake -B build && cmake --build build && ctest --test-dir build
@@ -51,6 +51,7 @@ only to test the viewer; `make test` skips those and still passes without it.
 ./cpusim --no-forwarding programs/hazard_chain.asm      # ablation
 ./cpusim --trace --fault-penalty 0 programs/fib.asm     # per-cycle pipeline view
 ./cpusim --csv out.csv programs/matmul.asm              # every counter as CSV
+./cpusim --prefault programs/hazard_chain.asm           # warm start, no cold faults
 ./cpusim --emit-trace run.json programs/matmul.asm      # record for the viewer
 ./cpusim --help
 ```
@@ -116,6 +117,39 @@ program keeps producing the right answer while thrashing.
 Caches are tag-only: they model timing while the bytes always live in physical
 memory. That keeps the data path trivially correct without weakening the hit/miss
 statistics, which is all the performance counters need.
+
+#### Cold start, and how to measure without it
+
+Demand paging is deliberate — without it the fault handler, frame allocator,
+eviction path and swap would never execute on any program. But it has a
+consequence worth knowing: the first instruction fetch and the first data access
+each take a page fault, so a program pays roughly 430 cycles before it is
+properly running. Real programs execute billions of instructions and amortise
+that to nothing; these benchmarks retire a few hundred, so it can dominate.
+
+`--prefault` maps text and data resident at load time, modelling a process whose
+pages are already warm. Nothing else changes — same results, same cache and TLB
+accesses, only the compulsory faults disappear:
+
+| Program | Cold cycles | CPI | Warm cycles | CPI |
+| --- | --- | --- | --- | --- |
+| `hazard_chain.asm` | 543 | 6.24 | **143** | **1.64** |
+| `fib.asm` | 651 | 3.83 | **255** | **1.50** |
+| `vector_add.asm` | 712 | 3.85 | **312** | **1.69** |
+| `pointer_chase.asm` | 14584 | 3.53 | 13976 | 3.39 |
+| `matmul.asm` | 12287 | 1.17 | 11889 | 1.13 |
+
+The short programs' cold CPI says almost nothing about the pipeline; warm, they
+land where a 5-stage machine should. `matmul` barely moves, because at 10,534
+retired instructions it already amortises its own cold start — which is the
+honest illustration of why the effect is a benchmark-length artefact rather than
+a property of the design.
+
+Note the default 200-cycle penalty is *generous*, not harsh: a real minor fault
+costs on the order of a thousand cycles, and a major one from an SSD is
+~100,000. It is a toy-scale figure chosen to be visible without swamping a short
+run. Stack and heap pages are anonymous, so they still fault on first touch even
+with `--prefault`, exactly as they would for a warm process.
 
 ### Process scheduling (`src/scheduler.cpp`)
 
@@ -255,9 +289,9 @@ descending from `0x40000`.
 
 ## Tests
 
-`make test` runs 236 assertions across three suites.
+`make test` runs 253 assertions across three suites.
 
-**`tests/test_sim.cpp` (181)** covers encode/decode round trips, assembler layout
+**`tests/test_sim.cpp` (198)** covers encode/decode round trips, assembler layout
 and error handling, ALU semantics, the memory hierarchy, faults, all three
 schedulers, and cycle accounting. Several are differential rather than absolute:
 they assert that enabling forwarding reduces cycles *without changing the

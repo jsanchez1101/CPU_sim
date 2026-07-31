@@ -209,6 +209,30 @@ void MemorySystem::loadIntoBackingStore(Process& p, uint32_t va,
   }
 }
 
+uint32_t MemorySystem::prefault(Process& p) {
+  uint32_t mapped = 0;
+  for (auto& kv : p.pageTable) {
+    PTE& pte = kv.second;
+    if (pte.valid || !pte.inStore) continue;
+    // Deliberately do not evict here: warming one process must not page out
+    // another. If memory is too small, the rest is demand paged as before.
+    if (framesInUse_ >= cfg_.frames) break;
+    const uint32_t frame = allocateFrame(p, kv.first);
+    uint8_t* dst = &physical_[static_cast<size_t>(frame) * PAGE_SIZE];
+    auto it = backingStore_.find(storeKey(p.pid, kv.first));
+    if (it != backingStore_.end()) {
+      std::memcpy(dst, it->second.data(), PAGE_SIZE);
+    } else {
+      std::memset(dst, 0, PAGE_SIZE);
+    }
+    pte.frame = frame;
+    pte.valid = true;
+    pte.dirty = false;
+    ++mapped;
+  }
+  return mapped;
+}
+
 void MemorySystem::evictOneFrame() {
   while (!fifo_.empty()) {
     const auto victim = fifo_.front();

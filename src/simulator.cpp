@@ -46,6 +46,7 @@ Simulator::Simulator(const SimConfig& cfg)
                               " KiB)"},
       {"miss penalty", std::to_string(cfg_.mem.missPenalty) + " cycles"},
       {"page fault penalty", std::to_string(cfg_.mem.pageFaultPenalty) + " cycles"},
+      {"start", cfg_.prefault ? "warm (text and data preloaded)" : "cold (demand paged)"},
   };
   tracer_ = std::make_unique<TraceRecorder>(std::move(meta), cfg_.traceMaxCycles);
 }
@@ -79,6 +80,8 @@ Process* Simulator::load(const Program& prog, int priority) {
   if (!prog.data.empty()) {
     mem_.loadIntoBackingStore(*p, prog.dataBase, prog.data, /*writable=*/true);
   }
+
+  if (cfg_.prefault) mem_.prefault(*p);
 
   p->state = ProcState::Ready;
   sched_->admit(p);

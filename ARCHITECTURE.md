@@ -130,6 +130,45 @@ each take a page fault. At the default 200-cycle penalty that is ~430 cycles of
 cold start, which dominates any program that retires only a few hundred
 instructions.
 
+### Why instruction fetch stalls are counted separately
+
+`stallFetch` counts cycles where IF could not hand an instruction to ID because
+the *instruction itself* was not available — an I-cache miss, an iTLB miss, or a
+fault on the text page. `fetchStage()` gets the cost back from `mem_.fetch32()`
+and parks it in `ifStall_`; while that counts down, fetch produces nothing and a
+bubble enters ID.
+
+It exists for three reasons.
+
+**Instruction supply is not free.** Without this the front end would always have
+an instruction ready, CPI would be optimistic, and the I-cache, iTLB and text
+paging would have no observable cost at all — there would be nothing to study.
+
+**It damages the pipeline differently from a data stall,** which is why it is a
+separate flag rather than folded into `memStall_`. A fetch stall starves the
+front end while the back end keeps draining, so instructions already in flight
+still retire:
+
+```
+0  --              --          --          --          i-fetch stall
+1  li r1, 8        --          --          --          i-fetch stall
+2  --              li r1, 8    --          --          i-fetch stall
+3  --              --          li r1, 8    --          i-fetch stall   ← still moving
+4  --              --          --          li r1, 8    i-fetch stall   ← still retiring
+```
+
+A data stall sits in the middle of the pipeline and freezes everything — the
+latch contents simply repeat. That asymmetry is real, and it is why hardware
+spends far more effort hiding data latency than fetch latency.
+
+**It is the only channel by which text-side paging shows up.** matmul's 298
+fetch-stall cycles decompose exactly: 200 for the text page fault, 96 for eight
+I-cache misses at 12 cycles, 2 for a TLB miss. Confirm any of those by ablation —
+`--prefault` removes the 200, `--line 128` cuts the eight misses to two.
+
+The I-cache is never written, so it never holds dirty lines and never writes
+back; every writeback in the report is D-cache.
+
 ## Troubleshooting playbook
 
 ### A program computes the wrong answer
@@ -178,8 +217,13 @@ viewer, the activity strip under the scrubber shows the same thing positionally.
 ### It looks frozen for a long stretch
 
 Almost always demand paging. Check `paging  N faults` in the report. Two faults
-at 200 cycles each is the normal cold start. Use `--fault-penalty 0` to remove
-it, or a longer-running program to amortise it.
+at 200 cycles each is the normal cold start.
+
+Prefer `--prefault` over `--fault-penalty 0` for this. Both make the cost go
+away, but `--fault-penalty 0` still *takes* the faults and counts them at zero
+cycles, which muddles the numbers; `--prefault` maps text and data resident up
+front so the faults genuinely do not happen, which is what a warm process looks
+like. Stack and heap stay anonymous and still fault on first touch either way.
 
 ### It hangs or hits the cycle limit
 
