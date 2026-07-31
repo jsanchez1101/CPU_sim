@@ -11,7 +11,9 @@ LIB_OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(LIB_SRC))
 MAIN_OBJ := $(BUILD)/main.o
 TEST_OBJ := $(BUILD)/test_sim.o
 
-BIN      ?= cpusim
+# Kept invocable as-is (leading ./) so recipes can call $(BIN) directly while
+# still allowing an absolute override, e.g. make BIN=/tmp/out/cpusim.
+BIN      ?= ./cpusim
 TESTBIN  := $(BUILD)/run_tests
 
 .PHONY: all test clean demo
