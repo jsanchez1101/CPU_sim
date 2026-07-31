@@ -35,6 +35,7 @@ make              # builds ./cpusim
 make test         # runs the full test suite (236 assertions)
 make demo         # a couple of representative runs
 make traces       # regenerates the viewer's bundled demo trace
+make invariants   # results must not depend on microarchitecture (77 comparisons)
 
 # or with CMake
 cmake -B build && cmake --build build && ctest --test-dir build
@@ -303,6 +304,12 @@ Stated plainly, since a simulator that hides its approximations is not much use:
 * No interrupts, no I/O, no blocked state — processes leave the CPU only by
   yielding, being preempted, halting, or faulting.
 
+## Internals and debugging
+
+[ARCHITECTURE.md](ARCHITECTURE.md) covers the cycle-by-cycle mechanics, the four
+flags that couple the pipeline stages, trace timing semantics, and a
+troubleshooting playbook keyed by symptom.
+
 ## Layout
 
 ```
@@ -312,6 +319,7 @@ src/         isa.cpp assembler.cpp memory.cpp pipeline.cpp scheduler.cpp
              simulator.cpp report.cpp stats.cpp trace.cpp main.cpp
 programs/    assembly benchmarks
 tests/       test_sim.cpp
+tools/       check_invariants.sh  the microarchitecture-independence check
 viewer/      index.html      the viewer, opens off disk with no server
              replay.js       delta replay engine, shared by page and tests
              verify_trace.js trace correctness checks

@@ -16,7 +16,7 @@ TEST_OBJ := $(BUILD)/test_sim.o
 BIN      ?= ./cpusim
 TESTBIN  := $(BUILD)/run_tests
 
-.PHONY: all test clean demo
+.PHONY: all test clean demo traces invariants
 
 all: $(BIN)
 
@@ -47,6 +47,12 @@ test: $(TESTBIN) $(BIN)
 	else \
 	  echo "[ skip ] node not found -- trace and viewer tests skipped"; \
 	fi
+
+# A program's result must not depend on microarchitecture, only its cycle
+# count. See ARCHITECTURE.md; this is the first thing to run when a result
+# looks wrong.
+invariants: $(BIN)
+	@BIN=$(BIN) ./tools/check_invariants.sh
 
 demo: $(BIN)
 	$(BIN) programs/vector_add.asm
