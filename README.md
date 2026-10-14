@@ -416,3 +416,7 @@ viewer/      index.html      the viewer, opens off disk with no server
 Every performance counter is declared once, in an X-macro list in `stats.h`, so
 the struct, the per-process merge, the report and the CSV export cannot drift
 apart.
+
+## License
+
+Original project code and documentation are available under the [MIT License](LICENSE). See [license scope and third-party materials](THIRD_PARTY_NOTICES.md) for exclusions and attribution boundaries.
