@@ -40,7 +40,7 @@ target_link_libraries(cpusim PRIVATE cpusim_core)
 enable_testing()
 add_executable(run_tests tests/test_sim.cpp)
 target_link_libraries(run_tests PRIVATE cpusim_core)
-add_test(NAME unit COMMAND run_tests)
+add_test(NAME unit COMMAND run_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME cli COMMAND ${CMAKE_COMMAND} -E env BIN=$<TARGET_FILE:cpusim>
          ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_cli.sh
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
