@@ -1,5 +1,8 @@
 # cpusim
 
+[![CI](https://github.com/jsanchez1101/CPU_sim/actions/workflows/ci.yml/badge.svg)](https://github.com/jsanchez1101/CPU_sim/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/jsanchez1101/CPU_sim/actions/workflows/codeql.yml/badge.svg)](https://github.com/jsanchez1101/CPU_sim/actions/workflows/codeql.yml)
+
 **A cycle-accurate CPU simulator in C++17** — an in-order 5-stage pipeline,
 virtual memory with demand paging, and three process schedulers. It runs real
 programs and reports where every cycle went and which part of the machine is the
@@ -14,7 +17,8 @@ decision *measurable*.
 | **Memory** | per-process page tables, pid-tagged TLB, demand paging with FIFO eviction and swap, set-associative write-back L1 I/D caches |
 | **OS** | round-robin / priority / MLFQ scheduling, pipeline-drained context switching |
 | **Measured** | forwarding worth **1.96×** · cache line size worth **2.36×** · MLFQ cuts interactive turnaround **5.1×** |
-| **Tested** | 253 assertions, 3 suites, plus a mutation-verified invariant checker across 91 configurations |
+| **Tested** | 280 assertions, 3 suites, plus a mutation-verified invariant checker across 91 configurations |
+| **Hardened** | fuzzed assembler and guest execution under ASan/UBSan, validated configuration, XSS-safe viewer, CodeQL in CI ([details](#security)) |
 | **Tooling** | zero-dependency browser viewer that replays a run cycle by cycle |
 | **Size** | ~4,300 lines of C++ (plus a 1,300-line viewer), no external dependencies |
 
@@ -51,10 +55,12 @@ internally, or [What is modelled](#what-is-modelled) below for the design.
 
 ```sh
 make              # builds ./cpusim
-make test         # runs the full test suite (253 assertions)
+make test         # runs the full test suite (280 assertions + CLI checks)
 make demo         # a couple of representative runs
 make traces       # regenerates the viewer's bundled demo trace
 make invariants   # results must not depend on microarchitecture (91 comparisons)
+make fuzz         # mutation-fuzz the assembler and simulator
+make sanitize     # test, invariants and fuzz under ASan + UBSan
 
 # or with CMake
 cmake -B build && cmake --build build && ctest --test-dir build
@@ -308,9 +314,10 @@ descending from `0x40000`.
 
 ## Tests
 
-`make test` runs 253 assertions across three suites.
+`make test` runs 280 assertions across three suites, then
+`tools/check_cli.sh`.
 
-**`tests/test_sim.cpp` (198)** covers encode/decode round trips, assembler layout
+**`tests/test_sim.cpp` (223)** covers encode/decode round trips, assembler layout
 and error handling, ALU semantics, the memory hierarchy, faults, all three
 schedulers, and cycle accounting. Several are differential rather than absolute:
 they assert that enabling forwarding reduces cycles *without changing the
@@ -325,12 +332,13 @@ independently written totals, that seeking backwards through keyframes gives
 byte-identical state to replaying forwards, and that no page or TLB entry ever
 points outside physical memory.
 
-**`viewer/test_viewer.js` (40)** loads the real `index.html` in jsdom and drives
+**`viewer/test_viewer.js` (42)** loads the real `index.html` in jsdom and drives
 it: asserts each stage box shows the instruction the trace says is there, that
 stepping forward then back returns identical DOM, that the scrubber, activity
 strip and run-until breakpoints land on cycles that genuinely contain the
 requested event, and that the register display matches the simulator's ground
-truth. It skips cleanly if node or jsdom is absent.
+truth. It also loads a hostile trace with markup in every string field and
+asserts none of it becomes DOM. It skips cleanly if node or jsdom is absent.
 
 One C++ test, `testBtbAliasingBetweenProcesses`, is a regression test for a bug
 this design invites. The BTB is shared between processes and indexed by PC with
@@ -340,6 +348,29 @@ that instruction is not a branch, EX had no reason to check the prediction, the
 bogus redirect was never corrected, and the second process silently skipped
 instructions. It still printed the right answer by luck, which is exactly why the
 test asserts on the retired instruction count and not just the result.
+
+## Security
+
+The simulator takes two kinds of untrusted input: `.asm` source, and trace
+files opened in the viewer. Guest programs are untrusted too, since the MMU is
+supposed to isolate one process from another. [SECURITY.md](SECURITY.md) has
+the full threat model and how to report a problem.
+
+| Boundary | Defence | Verified by |
+|---|---|---|
+| Assembler input | Malformed source raises `AssembleError`; the image (text, data, heap) is bounds-checked in 64-bit arithmetic so it can't wrap or overlap the stack | `make fuzz` under ASan/UBSan in CI, plus 2 minutes of coverage-guided libFuzzer per run |
+| Guest code | Per-process page tables; segmentation, protection and alignment faults; anonymous pages zero-filled before reuse | `testSegmentationFault`, `testWriteToTextIsRejected`, `testMisalignedAccess`, `testRecycledFramesDoNotLeakData`, and fuzzed programs executed under ASan |
+| Shared predictor state | Every BTB redirect is verified in EX, so one process cannot steer another | `testBtbAliasingBetweenProcesses` |
+| Configuration | `validateConfig` bounds every sizing knob, so a bad value can't trigger a huge allocation or out-of-range physical address; the CLI rejects non-numeric, negative and overflowing numbers | `testConfigValidation`, `tools/check_cli.sh` |
+| Trace files in the viewer | Every trace-derived value is HTML-escaped before it reaches the DOM | hostile-trace check in `viewer/test_viewer.js` |
+
+libFuzzer found the bounds bug on its first CI run: a `.space` near 2^32
+wrapped the data offset, and the next `.word` was written far outside the
+buffer. `testAssemblerBoundsTheImage` covers it.
+
+`testRecycledFramesDoNotLeakData` was checked against a deliberately broken
+build with the zero fill removed: it fails there, reading back the previous
+process's secret.
 
 ## Modelling simplifications
 
@@ -371,8 +402,10 @@ include/     isa.h assembler.h memory.h process.h pipeline.h scheduler.h
 src/         isa.cpp assembler.cpp memory.cpp pipeline.cpp scheduler.cpp
              simulator.cpp report.cpp stats.cpp trace.cpp main.cpp
 programs/    assembly benchmarks
-tests/       test_sim.cpp
-tools/       check_invariants.sh  the microarchitecture-independence check
+tests/       test_sim.cpp        unit, differential and isolation tests
+             fuzz_assembler.cpp  fuzzer: built-in driver or libFuzzer
+tools/       check_invariants.sh the microarchitecture-independence check
+             check_cli.sh        bad command-line values must be rejected
 viewer/      index.html      the viewer, opens off disk with no server
              replay.js       delta replay engine, shared by page and tests
              verify_trace.js trace correctness checks

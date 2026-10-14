@@ -1,6 +1,7 @@
 #include "simulator.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace cpusim {
 
@@ -14,8 +15,53 @@ const char* stateName(ProcState s) {
   return "?";
 }
 
+namespace {
+
+bool isPowerOfTwo(uint32_t v) { return v != 0 && (v & (v - 1)) == 0; }
+
+std::string checkCache(const char* name, uint32_t sets, uint32_t ways) {
+  if (sets == 0 || ways == 0) return std::string(name) + " needs at least one set and one way";
+  if (static_cast<uint64_t>(sets) * ways > MAX_CACHE_LINES) {
+    return std::string(name) + " has more than " + std::to_string(MAX_CACHE_LINES) + " lines";
+  }
+  return "";
+}
+
+}  // namespace
+
+std::string validateConfig(const SimConfig& cfg) {
+  const MemConfig& m = cfg.mem;
+  if (m.frames == 0 || m.frames > MAX_FRAMES) {
+    return "frames must be between 1 and " + std::to_string(MAX_FRAMES);
+  }
+  if (m.tlbEntries > MAX_TLB_ENTRIES) {
+    return "TLB entries must be at most " + std::to_string(MAX_TLB_ENTRIES);
+  }
+  // A line must hold whole words and must not straddle a page, or evicting a
+  // frame could leave a cached line that still covers it.
+  if (!isPowerOfTwo(m.lineSize) || m.lineSize < 4 || m.lineSize > PAGE_SIZE) {
+    return "line size must be a power of two between 4 and " + std::to_string(PAGE_SIZE);
+  }
+  std::string err = checkCache("L1I", m.icacheSets, m.icacheWays);
+  if (err.empty()) err = checkCache("L1D", m.dcacheSets, m.dcacheWays);
+  if (!err.empty()) return err;
+  if (cfg.quantum == 0) return "quantum must be at least 1 cycle";
+  if (cfg.maxCycles == 0) return "max cycles must be at least 1";
+  return "";
+}
+
+namespace {
+
+const SimConfig& validated(const SimConfig& cfg) {
+  const std::string err = validateConfig(cfg);
+  if (!err.empty()) throw std::invalid_argument(err);
+  return cfg;
+}
+
+}  // namespace
+
 Simulator::Simulator(const SimConfig& cfg)
-    : cfg_(cfg),
+    : cfg_(validated(cfg)),
       mem_(cfg.mem),
       core_(mem_, cfg.core),
       sched_(makeScheduler(cfg.policy, cfg.quantum)) {
@@ -57,6 +103,11 @@ bool Simulator::writeTrace() const {
 }
 
 Process* Simulator::load(const Program& prog, int priority) {
+  // assemble() guarantees this; a hand-built Program might not.
+  if (!imageFits(prog.textBase, prog.text.size(), prog.dataBase, prog.data.size())) {
+    throw std::invalid_argument("program '" + prog.name +
+                                "' does not fit below the stack");
+  }
   auto proc = std::make_unique<Process>();
   Process* p = proc.get();
   p->pid = nextPid_++;

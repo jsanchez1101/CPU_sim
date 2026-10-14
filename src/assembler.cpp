@@ -42,6 +42,12 @@ std::vector<std::string> splitCommas(const std::string& s) {
   return out;
 }
 
+std::string toHex(uint32_t v) {
+  std::ostringstream os;
+  os << std::hex << v;
+  return os.str();
+}
+
 [[noreturn]] void fail(int line, const std::string& msg) {
   throw AssembleError("line " + std::to_string(line) + ": " + msg);
 }
@@ -128,7 +134,8 @@ class Assembler {
     std::string raw;
     int lineNo = 0;
     bool inData = false;
-    uint32_t dataOffset = 0;
+    // 64-bit so a huge .space cannot wrap the offset back into range.
+    uint64_t dataOffset = 0;
 
     while (std::getline(in, raw)) {
       ++lineNo;
@@ -147,7 +154,7 @@ class Assembler {
           fail(lineNo, "duplicate label '" + label + "'");
         }
         if (inData) {
-          dataLabels_[label] = dataOffset;
+          dataLabels_[label] = static_cast<uint32_t>(dataOffset);
         } else {
           labelSlot_[label] = static_cast<uint32_t>(text_.size());
         }
@@ -171,7 +178,7 @@ class Assembler {
       if (inData) {
         DataItem item;
         item.line = lineNo;
-        item.offset = dataOffset;
+        item.offset = static_cast<uint32_t>(dataOffset);
         if (mnem == ".word") {
           item.values = splitCommas(rest);
           if (item.values.empty()) fail(lineNo, ".word needs at least one value");
@@ -179,13 +186,14 @@ class Assembler {
         } else if (mnem == ".space") {
           int64_t n = 0;
           if (!parseNumber(trim(rest), &n) || n <= 0) fail(lineNo, "bad .space size");
+          if (n > IMAGE_LIMIT) fail(lineNo, ".space size exceeds the address space");
           item.isSpace = true;
-          item.bytes = static_cast<uint32_t>(n);
-          item.bytes = alignUp(item.bytes, 4);
+          item.bytes = alignUp(static_cast<uint32_t>(n), 4);
         } else {
           fail(lineNo, "unknown data directive '" + mnem + "'");
         }
         dataOffset += item.bytes;
+        if (dataOffset > IMAGE_LIMIT) fail(lineNo, "data section exceeds the address space");
         data_.push_back(item);
         continue;
       }
@@ -199,7 +207,7 @@ class Assembler {
       }
       text_.push_back(item);
     }
-    dataSize_ = dataOffset;
+    dataSize_ = static_cast<uint32_t>(dataOffset);
   }
 
   // Rewrites convenience mnemonics into real ones. Every pseudo maps to a
@@ -232,7 +240,13 @@ class Assembler {
   }
 
   void layout() {
-    textSize_ = static_cast<uint32_t>(text_.size()) * 4;
+    const uint64_t textBytes = static_cast<uint64_t>(text_.size()) * 4;
+    const uint64_t dataBase = pageSpan(TEXT_BASE + std::max<uint64_t>(textBytes, 1));
+    if (!imageFits(TEXT_BASE, textBytes, dataBase, dataSize_)) {
+      throw AssembleError("program too large: text, data and heap must end below 0x" +
+                          toHex(IMAGE_LIMIT) + ", where the stack begins");
+    }
+    textSize_ = static_cast<uint32_t>(textBytes);
     dataBase_ = alignUp(TEXT_BASE + textSize_, PAGE_SIZE);
     if (dataBase_ == TEXT_BASE) dataBase_ = TEXT_BASE + PAGE_SIZE;
     for (const auto& kv : labelSlot_) labels_[kv.first] = TEXT_BASE + kv.second * 4;

@@ -10,13 +10,24 @@ LIB_SRC  := $(filter-out src/main.cpp,$(wildcard src/*.cpp))
 LIB_OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(LIB_SRC))
 MAIN_OBJ := $(BUILD)/main.o
 TEST_OBJ := $(BUILD)/test_sim.o
+FUZZ_OBJ := $(BUILD)/fuzz_assembler.o
 
 # Kept invocable as-is (leading ./) so recipes can call $(BIN) directly while
 # still allowing an absolute override, e.g. make BIN=/tmp/out/cpusim.
 BIN      ?= ./cpusim
 TESTBIN  := $(BUILD)/run_tests
+FUZZBIN  := $(BUILD)/fuzz_assembler
 
-.PHONY: all test clean demo traces invariants
+# Iterations for `make fuzz`; CI raises this.
+FUZZ_RUNS ?= 20000
+
+# Flags for `make sanitize`: AddressSanitizer and UBSan, with UB made fatal so
+# a finding fails the build instead of scrolling past.
+SAN_FLAGS := -std=c++17 -O1 -g -fno-omit-frame-pointer -Iinclude \
+             -Wall -Wextra -Wpedantic \
+             -fsanitize=address,undefined -fno-sanitize-recover=undefined
+
+.PHONY: all test clean demo traces invariants fuzz sanitize
 
 all: $(BIN)
 
@@ -29,9 +40,15 @@ $(BUILD)/%.o: src/%.cpp | $(BUILD)
 $(TEST_OBJ): tests/test_sim.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
+$(FUZZ_OBJ): tests/fuzz_assembler.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
+
 -include $(wildcard $(BUILD)/*.d)
 
 $(TESTBIN): $(LIB_OBJ) $(TEST_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(FUZZBIN): $(LIB_OBJ) $(FUZZ_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # The C++ suite, then the trace/viewer suites if node is available. The viewer
@@ -39,6 +56,7 @@ $(TESTBIN): $(LIB_OBJ) $(TEST_OBJ)
 # fails purely for lack of a JS toolchain.
 test: $(TESTBIN) $(BIN)
 	$(TESTBIN)
+	@BIN=$(BIN) ./tools/check_cli.sh
 	@if command -v node > /dev/null 2>&1; then \
 	  $(BIN) --emit-trace $(BUILD)/test-trace.json --sched mlfq --quantum 60 \
 	      programs/spinner.asm programs/yielder.asm > /dev/null && \
@@ -53,6 +71,15 @@ test: $(TESTBIN) $(BIN)
 # looks wrong.
 invariants: $(BIN)
 	@BIN=$(BIN) ./tools/check_invariants.sh
+
+# Feed mutated .asm files to the assembler and run whatever assembles. Only
+# meaningful with sanitizers on, so `make sanitize` runs it too.
+fuzz: $(FUZZBIN)
+	$(FUZZBIN) $(FUZZ_RUNS) 1 programs/*.asm
+
+# Everything above under ASan + UBSan, in a separate build directory.
+sanitize:
+	$(MAKE) BUILD=$(BUILD)/san BIN=$(BUILD)/san/cpusim CXXFLAGS="$(SAN_FLAGS)" test invariants fuzz
 
 demo: $(BIN)
 	$(BIN) programs/vector_add.asm

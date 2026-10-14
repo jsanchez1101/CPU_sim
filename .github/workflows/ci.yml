@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.cxx }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install viewer test dependency
+        run: npm install --no-save --no-audit --no-fund jsdom@24.1.3
+      - name: Build and test
+        run: make CXX=${{ matrix.cxx }} CXXFLAGS="-std=c++17 -O2 -Iinclude -Wall -Wextra -Wpedantic -Wshadow -Werror" test
+      - name: Microarchitecture-independence check
+        run: make CXX=${{ matrix.cxx }} invariants
+
+  sanitize:
+    name: ASan + UBSan, tests and fuzzing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save --no-audit --no-fund jsdom@24.1.3
+      - run: make sanitize FUZZ_RUNS=100000
+
+  cmake:
+    name: CMake + CTest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DCPUSIM_WERROR=ON -DCPUSIM_SANITIZE=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+
+  libfuzzer:
+    name: libFuzzer (coverage-guided, 2 min)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -B build -DCMAKE_CXX_COMPILER=clang++ -DCPUSIM_LIBFUZZER=ON
+      - run: cmake --build build -j --target fuzz_assembler_libfuzzer
+      - name: Fuzz
+        run: |
+          mkdir -p corpus
+          cp programs/*.asm corpus/
+          ./build/fuzz_assembler_libfuzzer -max_total_time=120 -max_len=4096 corpus
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfuzzer-crashes
+          path: crash-*

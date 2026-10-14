@@ -32,10 +32,23 @@ struct SimConfig {
   uint64_t traceMaxCycles = 50'000;
 };
 
+// Upper bounds on the sizing knobs. They keep a mistyped or hostile value from
+// requesting gigabytes of host memory, and keep physical addresses within 32
+// bits.
+constexpr uint32_t MAX_FRAMES = 65536;       // 256 MiB of simulated memory
+constexpr uint32_t MAX_CACHE_LINES = 1u << 20;
+constexpr uint32_t MAX_TLB_ENTRIES = 4096;
+
+// Returns an empty string when cfg is usable, otherwise a message naming the
+// first bad setting.
+std::string validateConfig(const SimConfig& cfg);
+
 class Simulator {
  public:
+  // Throws std::invalid_argument when validateConfig rejects cfg.
   explicit Simulator(const SimConfig& cfg);
 
+  // Throws std::invalid_argument if the program's regions would overlap.
   Process* load(const Program& prog, int priority = 0);
   void run();
 
