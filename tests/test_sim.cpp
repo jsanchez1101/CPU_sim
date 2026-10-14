@@ -4,6 +4,7 @@
 // anything fails. Run with `make test`.
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -694,6 +695,94 @@ void testBtbAliasingBetweenProcesses() {
   CHECK_EQ(b->stats.instructions, soloInstrs);
 }
 
+// Security property: a physical frame handed to a new owner must not carry the
+// previous owner's data. Stack pages are anonymous (zero-filled on first touch
+// rather than loaded from the program image), so they are where a missing
+// zero fill would leak. The writer fills its whole stack with a secret and
+// exits; with only 4 frames, the reader's stack lands in recycled frames and
+// must still read as zero.
+void testRecycledFramesDoNotLeakData() {
+  beginCase("a recycled frame never exposes the previous process's data");
+  const char* writer =
+      "main:\n"
+      "  mv   r1, sp\n"
+      "  li   r2, 12345\n"
+      "  li   r3, 0\n"
+      "  li   r4, 4096\n"         // every word of the 4-page stack
+      "loop:\n"
+      "  bge  r3, r4, done\n"
+      "  addi r1, r1, -4\n"
+      "  sw   r2, 0(r1)\n"
+      "  addi r3, r3, 1\n"
+      "  j    loop\n"
+      "done:\n"
+      "  halt\n";
+  const char* reader =
+      "main:\n"
+      "  mv   r1, sp\n"
+      "  li   r3, 0\n"
+      "  li   r4, 4096\n"
+      "  li   r5, 0\n"            // OR of everything read
+      "loop:\n"
+      "  bge  r3, r4, done\n"
+      "  addi r1, r1, -4\n"
+      "  lw   r2, 0(r1)\n"
+      "  or   r5, r5, r2\n"
+      "  addi r3, r3, 1\n"
+      "  j    loop\n"
+      "done:\n"
+      "  halt\n";
+
+  SimConfig cfg;
+  cfg.policy = SchedPolicy::Priority;  // writer runs to completion first
+  cfg.mem.frames = 4;
+  cfg.maxCycles = 20'000'000;
+  Simulator sim(cfg);
+  Process* w = sim.load(assemble(writer, "writer"), 0);
+  Process* r = sim.load(assemble(reader, "reader"), 1);
+  sim.run();
+
+  CHECK(w->state == ProcState::Terminated);
+  CHECK(r->state == ProcState::Terminated);
+  CHECK(r->faultMessage.empty());
+  CHECK(w->finishCycle < r->firstRunCycle);
+  CHECK_EQ(r->regs[5], 0u);
+}
+
+void testConfigValidation() {
+  beginCase("invalid configurations are rejected before allocation");
+  CHECK(validateConfig(SimConfig{}).empty());
+
+  auto rejects = [](void (*mutate)(SimConfig&)) {
+    SimConfig cfg;
+    mutate(cfg);
+    if (validateConfig(cfg).empty()) return false;
+    try {
+      Simulator sim(cfg);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(rejects([](SimConfig& c) { c.mem.frames = 0; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.frames = MAX_FRAMES + 1; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.lineSize = 0; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.lineSize = 3; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.lineSize = 48; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.lineSize = PAGE_SIZE * 2; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.dcacheSets = 0; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.icacheSets = 1u << 16; c.mem.icacheWays = 1u << 16; }));
+  CHECK(rejects([](SimConfig& c) { c.mem.tlbEntries = MAX_TLB_ENTRIES + 1; }));
+  CHECK(rejects([](SimConfig& c) { c.quantum = 0; }));
+  CHECK(rejects([](SimConfig& c) { c.maxCycles = 0; }));
+
+  SimConfig edge;
+  edge.mem.frames = 1;
+  edge.mem.lineSize = PAGE_SIZE;
+  edge.mem.tlbEntries = 0;  // no TLB: every access walks the page table
+  CHECK(validateConfig(edge).empty());
+}
+
 void testCycleAccounting() {
   beginCase("cycle accounting adds up");
   Run r = runSource(kLoadUseProgram);
@@ -773,6 +862,8 @@ int main() {
   testPriorityOrdering();
   testMlfqDemotesCpuBoundJob();
   testBtbAliasingBetweenProcesses();
+  testRecycledFramesDoNotLeakData();
+  testConfigValidation();
   testCycleAccounting();
   testProgramFilesAssembleAndRun();
 
