@@ -17,7 +17,7 @@ decision *measurable*.
 | **Memory** | per-process page tables, pid-tagged TLB, demand paging with FIFO eviction and swap, set-associative write-back L1 I/D caches |
 | **OS** | round-robin / priority / MLFQ scheduling, pipeline-drained context switching |
 | **Measured** | forwarding worth **1.96×** · cache line size worth **2.36×** · MLFQ cuts interactive turnaround **5.1×** |
-| **Tested** | 273 assertions, 3 suites, plus a mutation-verified invariant checker across 91 configurations |
+| **Tested** | 280 assertions, 3 suites, plus a mutation-verified invariant checker across 91 configurations |
 | **Hardened** | fuzzed assembler and guest execution under ASan/UBSan, validated configuration, XSS-safe viewer, CodeQL in CI ([details](#security)) |
 | **Tooling** | zero-dependency browser viewer that replays a run cycle by cycle |
 | **Size** | ~4,300 lines of C++ (plus a 1,300-line viewer), no external dependencies |
@@ -55,7 +55,7 @@ internally, or [What is modelled](#what-is-modelled) below for the design.
 
 ```sh
 make              # builds ./cpusim
-make test         # runs the full test suite (273 assertions + CLI checks)
+make test         # runs the full test suite (280 assertions + CLI checks)
 make demo         # a couple of representative runs
 make traces       # regenerates the viewer's bundled demo trace
 make invariants   # results must not depend on microarchitecture (91 comparisons)
@@ -314,10 +314,10 @@ descending from `0x40000`.
 
 ## Tests
 
-`make test` runs 273 assertions across three suites, then
+`make test` runs 280 assertions across three suites, then
 `tools/check_cli.sh`.
 
-**`tests/test_sim.cpp` (216)** covers encode/decode round trips, assembler layout
+**`tests/test_sim.cpp` (223)** covers encode/decode round trips, assembler layout
 and error handling, ALU semantics, the memory hierarchy, faults, all three
 schedulers, and cycle accounting. Several are differential rather than absolute:
 they assert that enabling forwarding reduces cycles *without changing the
@@ -358,11 +358,15 @@ the full threat model and how to report a problem.
 
 | Boundary | Defence | Verified by |
 |---|---|---|
-| Assembler input | Malformed source raises `AssembleError`; no crash or out-of-bounds read | `make fuzz` under ASan/UBSan in CI, plus 2 minutes of coverage-guided libFuzzer per run |
+| Assembler input | Malformed source raises `AssembleError`; the image (text, data, heap) is bounds-checked in 64-bit arithmetic so it can't wrap or overlap the stack | `make fuzz` under ASan/UBSan in CI, plus 2 minutes of coverage-guided libFuzzer per run |
 | Guest code | Per-process page tables; segmentation, protection and alignment faults; anonymous pages zero-filled before reuse | `testSegmentationFault`, `testWriteToTextIsRejected`, `testMisalignedAccess`, `testRecycledFramesDoNotLeakData`, and fuzzed programs executed under ASan |
 | Shared predictor state | Every BTB redirect is verified in EX, so one process cannot steer another | `testBtbAliasingBetweenProcesses` |
 | Configuration | `validateConfig` bounds every sizing knob, so a bad value can't trigger a huge allocation or out-of-range physical address; the CLI rejects non-numeric, negative and overflowing numbers | `testConfigValidation`, `tools/check_cli.sh` |
 | Trace files in the viewer | Every trace-derived value is HTML-escaped before it reaches the DOM | hostile-trace check in `viewer/test_viewer.js` |
+
+libFuzzer found the bounds bug on its first CI run: a `.space` near 2^32
+wrapped the data offset, and the next `.word` was written far outside the
+buffer. `testAssemblerBoundsTheImage` covers it.
 
 `testRecycledFramesDoNotLeakData` was checked against a deliberately broken
 build with the zero fill removed: it fails there, reading back the previous
