@@ -155,6 +155,45 @@ void testAssemblerErrors() {
   CHECK(threwDuplicate);
 }
 
+// Regression tests for two bugs found by libFuzzer. A .space near 2^32 wrapped
+// the data offset, so a following .word was written far outside the data
+// buffer; and a large but in-range .space produced a data region overlapping
+// the stack. Both must be rejected before anything is allocated.
+void testAssemblerBoundsTheImage() {
+  beginCase("assembler rejects programs that overflow the address space");
+  auto rejects = [](const std::string& src) {
+    try {
+      assemble(src, "big");
+    } catch (const AssembleError&) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(rejects(".data\nbig: .space 0xFFFFFFFC\nx: .word 1\n.text\nmain: halt\n"));
+  CHECK(rejects(".data\nbig: .space 99999999999\n.text\nmain: halt\n"));
+  CHECK(rejects(".data\nbig: .space 300000\n.text\nmain: halt\n"));
+  CHECK(rejects(".data\na: .space 131072\nb: .space 131072\n.text\nmain: halt\n"));
+
+  // The largest data section that still leaves room for the heap is accepted.
+  const uint32_t room = IMAGE_LIMIT - 2 * PAGE_SIZE - HEAP_SIZE;
+  CHECK(!rejects(".data\nbig: .space " + std::to_string(room) +
+                 "\n.text\nmain: halt\n"));
+  CHECK(rejects(".data\nbig: .space " + std::to_string(room + 4) +
+                "\n.text\nmain: halt\n"));
+
+  // A hand-built Program that would overlap the stack is refused at load.
+  Program prog = assemble("main: halt\n", "p");
+  prog.data.assign(IMAGE_LIMIT, 0);
+  Simulator sim(SimConfig{});
+  bool threw = false;
+  try {
+    sim.load(prog);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
 void testAluSemantics() {
   beginCase("ALU semantics");
   Run r = runSource(
@@ -843,6 +882,7 @@ int main() {
   testEncodeDecodeRoundTrip();
   testAssemblerLayout();
   testAssemblerErrors();
+  testAssemblerBoundsTheImage();
   testAluSemantics();
   testRegisterZeroIsHardwired();
   testMemoryRoundTrip();

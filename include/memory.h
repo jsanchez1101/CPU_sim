@@ -42,6 +42,20 @@ inline uint32_t pageNumber(uint32_t va) { return va >> PAGE_SHIFT; }
 inline uint32_t pageOffset(uint32_t va) { return va & (PAGE_SIZE - 1); }
 inline uint32_t alignUp(uint32_t v, uint32_t a) { return (v + a - 1) / a * a; }
 
+// A program image is text, then data, then the heap, and all of it must end at
+// or below the bottom of the stack; overlapping regions would let one alias
+// the other. Computed in 64 bits so an oversized input cannot wrap around.
+constexpr uint32_t IMAGE_LIMIT = STACK_TOP - STACK_SIZE;
+inline uint64_t pageSpan(uint64_t bytes) {
+  return (bytes + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+}
+inline bool imageFits(uint64_t textBase, uint64_t textBytes, uint64_t dataBase,
+                      uint64_t dataBytes) {
+  const uint64_t textEnd = textBase + (textBytes == 0 ? PAGE_SIZE : pageSpan(textBytes));
+  return textBase >= PAGE_SIZE && dataBase >= textEnd &&
+         dataBase + pageSpan(dataBytes) + HEAP_SIZE <= IMAGE_LIMIT;
+}
+
 struct PTE {
   uint32_t frame = 0;
   bool valid = false;    // resident in a physical frame
@@ -137,7 +151,7 @@ class Cache {
 
 class Tlb {
  public:
-  explicit Tlb(uint32_t entries) : entries_(entries) { table_.resize(entries); }
+  explicit Tlb(uint32_t entries) : table_(entries) {}
 
   PTE* lookup(uint32_t pid, uint32_t vpn);
   void insert(uint32_t pid, uint32_t vpn, PTE* pte);
@@ -154,7 +168,6 @@ class Tlb {
     uint64_t lastUse = 0;
   };
 
-  uint32_t entries_;
   uint64_t clock_ = 0;
   std::vector<Entry> table_;
 };

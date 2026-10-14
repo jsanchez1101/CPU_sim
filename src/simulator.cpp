@@ -103,6 +103,11 @@ bool Simulator::writeTrace() const {
 }
 
 Process* Simulator::load(const Program& prog, int priority) {
+  // assemble() guarantees this; a hand-built Program might not.
+  if (!imageFits(prog.textBase, prog.text.size(), prog.dataBase, prog.data.size())) {
+    throw std::invalid_argument("program '" + prog.name +
+                                "' does not fit below the stack");
+  }
   auto proc = std::make_unique<Process>();
   Process* p = proc.get();
   p->pid = nextPid_++;

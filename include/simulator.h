@@ -48,6 +48,7 @@ class Simulator {
   // Throws std::invalid_argument when validateConfig rejects cfg.
   explicit Simulator(const SimConfig& cfg);
 
+  // Throws std::invalid_argument if the program's regions would overlap.
   Process* load(const Program& prog, int priority = 0);
   void run();
 
