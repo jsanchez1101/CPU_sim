@@ -281,6 +281,11 @@
 
 const $ = id => document.getElementById(id);
 const hex = n => '0x' + (n >>> 0).toString(16).padStart(4, '0');
+// Trace files are untrusted input: a hand-edited trace can put markup in any
+// string or number field. Everything taken from T goes through esc() before
+// it reaches innerHTML.
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = v => String(v).replace(/[&<>"']/g, c => ESC[c]);
 const KEYFRAME_EVERY = 500;
 
 let T = null;            // the loaded trace
@@ -346,8 +351,8 @@ function render() {
 
   $('cycNum').textContent = rec.c;
   const nameOf = q => (T.processes.find(p => p.pid === q) || {}).name || '';
-  $('procName').innerHTML = '<span class="chip">running <b>' + nameOf(runPid) + '</b></span>' +
-    (showPid !== runPid ? ' <span class="chip">viewing <b>' + nameOf(showPid) + '</b></span>' : '');
+  $('procName').innerHTML = '<span class="chip">running <b>' + esc(nameOf(runPid)) + '</b></span>' +
+    (showPid !== runPid ? ' <span class="chip">viewing <b>' + esc(nameOf(showPid)) + '</b></span>' : '');
 
   // stages: IF is the PC about to be fetched; the rest come from the latches
   const stagePcs = [rec.pc, rec.s[0], rec.s[1], rec.s[2], rec.s[3]];
@@ -363,13 +368,13 @@ function render() {
     el.innerHTML = '<div class="nm">' + STAGE_KEYS[i].toUpperCase() + '</div>' +
       (pc === null || pc === undefined
         ? '<div class="ins">bubble</div>'
-        : '<div class="pc">' + hex(pc) + '</div><div class="ins">' + (txt || '?') + '</div>' + extra);
+        : '<div class="pc">' + hex(pc) + '</div><div class="ins">' + esc(txt || '?') + '</div>' + extra);
   }
 
   const noteEl = $('note');
   const parts = [];
-  if (rec.ev) parts.push('<span class="ev">' + rec.ev + '</span>');
-  if (rec.n) parts.push(rec.n);
+  if (rec.ev) parts.push('<span class="ev">' + esc(rec.ev) + '</span>');
+  if (rec.n) parts.push(esc(rec.n));
   noteEl.innerHTML = parts.join(' &middot; ') || '&nbsp;';
   noteEl.classList.toggle('active', !!(rec.n || rec.ev));
 
@@ -401,7 +406,7 @@ function render() {
     const v = proc.regs[i] >>> 0;
     const sv = v > 0x7fffffff ? (v - 0x100000000) : v;
     el.className = 'reg' + (state.touched.regs.has(i) ? ' chg' : '') + (v === 0 ? ' zero' : '');
-    el.innerHTML = '<span class="n">' + names[i] + '</span><span class="v">' + sv + '</span>';
+    el.innerHTML = '<span class="n">' + names[i] + '</span><span class="v">' + esc(sv) + '</span>';
     el.title = hex(v);
   }
 
@@ -443,10 +448,10 @@ function renderStats(rec, proc) {
     ['evictions', g('pageEvictions')],
     ['ctx switches', g('contextSwitches')],
   ];
-  let html = '<h2>Counters</h2><div><span class="k">cycle</span><span class="big">' + cyc + '</span></div><hr>';
+  let html = '<h2>Counters</h2><div><span class="k">cycle</span><span class="big">' + esc(cyc) + '</span></div><hr>';
   for (const r of rows) {
     if (r === null) { html += '<hr>'; continue; }
-    html += '<div><span class="k">' + r[0] + '</span><span>' + r[1] + '</span></div>';
+    html += '<div><span class="k">' + r[0] + '</span><span>' + esc(r[1]) + '</span></div>';
   }
   $('stats').innerHTML = html;
 }
@@ -462,7 +467,7 @@ function renderCache(elId, lines, sets, ways, touched) {
       const l = lines[flat] || { valid: 0, dirty: 0, tag: 0 };
       if (touched.has(flat)) any = true;
       cells += '<td class="' + (l.valid ? (l.dirty ? 'cell-d' : 'cell-v') : 'cell-x') + '">' +
-        (l.valid ? 'tag ' + l.tag + (l.dirty ? ' D' : '') : '&mdash;') + '</td>';
+        (l.valid ? 'tag ' + esc(l.tag) + (l.dirty ? ' D' : '') : '&mdash;') + '</td>';
     }
     html += '<tr class="' + (any ? 'chg' : '') + '"><td class="cell-x">' + i + '</td>' + cells + '</tr>';
   }
@@ -474,7 +479,7 @@ function renderTlb() {
   state.tlb.forEach((e, i) => {
     html += '<tr class="' + (state.touched.tlb.has(i) ? 'chg' : '') + '"><td class="cell-x">' + i + '</td>' +
       (e.valid
-        ? '<td>' + e.pid + '</td><td>' + e.vpn + '</td><td class="cell-v">' + e.frame + '</td>'
+        ? '<td>' + esc(e.pid) + '</td><td>' + esc(e.vpn) + '</td><td class="cell-v">' + esc(e.frame) + '</td>'
         : '<td colspan="3" class="cell-x">&mdash;</td>') + '</tr>';
   });
   $('tlb').innerHTML = html;
@@ -488,8 +493,8 @@ function renderPageTable(pid, proc) {
     const e = proc.pt.get(vpn);
     const base = vpn * T.geometry.pageSize;
     html += '<tr class="' + (state.touched.pt.has(pid + ':' + vpn) ? 'chg' : '') + '">' +
-      '<td>' + vpn + '</td><td class="cell-x">' + hex(base) + '</td>' +
-      '<td>' + (e.valid ? e.frame : '&mdash;') + '</td>' +
+      '<td>' + esc(vpn) + '</td><td class="cell-x">' + hex(base) + '</td>' +
+      '<td>' + (e.valid ? esc(e.frame) : '&mdash;') + '</td>' +
       '<td class="' + (e.valid ? (e.dirty ? 'cell-d' : 'cell-v') : 'cell-x') + '">' +
       (e.valid ? (e.dirty ? 'resident, dirty' : 'resident') : 'swapped out') + '</td></tr>';
   }
@@ -611,7 +616,7 @@ function updateMark() {
 
 function addLog() {
   const html = T.cycles.filter(r => r.ev).slice(0, 400)
-    .map(r => '<div><b>' + r.c + '</b> &middot; ' + r.ev + '</div>').join('');
+    .map(r => '<div><b>' + esc(r.c) + '</b> &middot; ' + esc(r.ev) + '</div>').join('');
   $('log').innerHTML = html || '<div>no scheduling events</div>';
 }
 
@@ -624,12 +629,12 @@ function load(json) {
   $('app').classList.remove('hide');
 
   $('hdrSub').textContent = T.cycles.length + ' cycles recorded' + (T.truncated ? ' (truncated)' : '');
-  $('chips').innerHTML = T.config.map(([k, v]) => '<span class="chip">' + k + ' <b>' + v + '</b></span>').join('');
-  $('summary').innerHTML = T.summary.map(([n, s]) => '<div><b style="color:var(--text)">' + n + '</b>: ' + s + '</div>').join('');
+  $('chips').innerHTML = T.config.map(([k, v]) => '<span class="chip">' + esc(k) + ' <b>' + esc(v) + '</b></span>').join('');
+  $('summary').innerHTML = T.summary.map(([n, s]) => '<div><b style="color:var(--text)">' + esc(n) + '</b>: ' + esc(s) + '</div>').join('');
   $('dGeom').textContent = T.geometry.dcacheSets + '×' + T.geometry.dcacheWays + ', ' + T.geometry.lineSize + 'B';
   $('iGeom').textContent = T.geometry.icacheSets + '×' + T.geometry.icacheWays + ', ' + T.geometry.lineSize + 'B';
 
-  $('procSel').innerHTML = T.processes.map(p => '<option value="' + p.pid + '">' + p.name + '</option>').join('');
+  $('procSel').innerHTML = T.processes.map(p => '<option value="' + esc(p.pid) + '">' + esc(p.name) + '</option>').join('');
   $('scrub').max = String(T.cycles.length - 1);
   $('tlEnd').textContent = T.cycles[T.cycles.length - 1].c;
 

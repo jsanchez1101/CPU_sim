@@ -261,6 +261,23 @@ doc.getElementById('btnPlay').click();
 doc.getElementById('btnPlay').click();
 check(doc.getElementById('btnPlay').textContent.includes('Play'), 'pause restores the play label');
 
+// A trace file is untrusted input. Plant markup in every string field the
+// page renders and check that none of it becomes DOM.
+const PAYLOAD = '<img src=x onerror="window.__pwned=1">';
+const hostile = JSON.parse(JSON.stringify(trace));
+hostile.processes.forEach(p => {
+  p.name = PAYLOAD;
+  for (const pc of Object.keys(p.code)) p.code[pc] = PAYLOAD;
+});
+hostile.config = hostile.config.map(([k]) => [PAYLOAD, PAYLOAD]);
+hostile.summary = hostile.summary.map(() => [PAYLOAD, PAYLOAD]);
+hostile.cycles.forEach(r => { r.ev = PAYLOAD; r.n = PAYLOAD; });
+window.load(hostile);
+window.seek(Math.min(50, hostile.cycles.length - 1));
+eq(doc.querySelectorAll('img').length, 0, 'markup in a trace file is not rendered as HTML');
+check(doc.getElementById('procName').textContent.includes(PAYLOAD),
+      'hostile process name is shown as text');
+
 eq(errors.length, 0, 'no uncaught errors while driving the page', errors.slice(0, 3).join(' | '));
 
 console.log(checks + ' checks, ' + failures + ' failures');
