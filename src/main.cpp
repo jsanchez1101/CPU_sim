@@ -1,7 +1,11 @@
 // main.cpp -- command line driver.
+#include <cctype>
+#include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -48,12 +52,35 @@ void usage(const char* argv0) {
       argv0, PAGE_SIZE);
 }
 
+// Parses all of [begin, end) as an unsigned number no larger than max. strtoull
+// alone would accept "abc" as 0, wrap "-1" to 2^64-1 and ignore trailing junk.
+bool parseUnsigned(const char* begin, const char* end, int base, uint64_t max,
+                   uint64_t* out) {
+  if (begin == end || !std::isdigit(static_cast<unsigned char>(*begin))) return false;
+  const std::string text(begin, end);
+  char* stop = nullptr;
+  errno = 0;
+  const unsigned long long v = std::strtoull(text.c_str(), &stop, base);
+  if (errno == ERANGE || *stop != '\0' || v > max) return false;
+  *out = v;
+  return true;
+}
+
+bool parseUnsigned(const char* text, int base, uint64_t max, uint64_t* out) {
+  return parseUnsigned(text, text + std::strlen(text), base, max, out);
+}
+
 bool parseGeometry(const char* text, uint32_t* sets, uint32_t* ways) {
   const char* x = std::strchr(text, 'x');
   if (x == nullptr) return false;
-  *sets = static_cast<uint32_t>(std::strtoul(text, nullptr, 10));
-  *ways = static_cast<uint32_t>(std::strtoul(x + 1, nullptr, 10));
-  return *sets > 0 && *ways > 0;
+  uint64_t s = 0, w = 0;
+  if (!parseUnsigned(text, x, 10, MAX_CACHE_LINES, &s) ||
+      !parseUnsigned(x + 1, 10, MAX_CACHE_LINES, &w)) {
+    return false;
+  }
+  *sets = static_cast<uint32_t>(s);
+  *ways = static_cast<uint32_t>(w);
+  return s > 0 && w > 0;
 }
 
 }  // namespace
@@ -75,6 +102,18 @@ int main(int argc, char** argv) {
       }
       return argv[++i];
     };
+    // Reads the option's value as an unsigned number, exiting on bad input.
+    auto number = [&](const char* what, uint64_t max) -> uint64_t {
+      uint64_t v = 0;
+      if (!parseUnsigned(needValue(what), 10, max, &v)) {
+        std::fprintf(stderr, "error: %s wants a whole number no larger than %llu\n",
+                     what, static_cast<unsigned long long>(max));
+        std::exit(2);
+      }
+      return v;
+    };
+    constexpr uint64_t kU32 = std::numeric_limits<uint32_t>::max();
+    constexpr uint64_t kU64 = std::numeric_limits<uint64_t>::max();
 
     if (arg == "-h" || arg == "--help") {
       usage(argv[0]);
@@ -85,11 +124,20 @@ int main(int argc, char** argv) {
         return 2;
       }
     } else if (arg == "--quantum") {
-      cfg.quantum = std::strtoull(needValue("--quantum"), nullptr, 10);
+      cfg.quantum = number("--quantum", kU64);
     } else if (arg == "--switch-cost") {
-      cfg.contextSwitchPenalty = std::strtoull(needValue("--switch-cost"), nullptr, 10);
+      cfg.contextSwitchPenalty = number("--switch-cost", kU64);
     } else if (arg == "--priority") {
-      nextPriority = static_cast<int>(std::strtol(needValue("--priority"), nullptr, 10));
+      const char* text = needValue("--priority");
+      char* stop = nullptr;
+      errno = 0;
+      const long v = std::strtol(text, &stop, 10);
+      if (stop == text || *stop != '\0' || errno == ERANGE ||
+          v < std::numeric_limits<int>::min() || v > std::numeric_limits<int>::max()) {
+        std::fprintf(stderr, "error: --priority wants an integer\n");
+        return 2;
+      }
+      nextPriority = static_cast<int>(v);
     } else if (arg == "--no-forwarding") {
       cfg.core.forwarding = false;
     } else if (arg == "--no-predictor") {
@@ -97,11 +145,11 @@ int main(int argc, char** argv) {
     } else if (arg == "--trace") {
       cfg.core.trace = true;
     } else if (arg == "--frames") {
-      cfg.mem.frames = static_cast<uint32_t>(std::strtoul(needValue("--frames"), nullptr, 10));
+      cfg.mem.frames = static_cast<uint32_t>(number("--frames", kU32));
     } else if (arg == "--tlb") {
-      cfg.mem.tlbEntries = static_cast<uint32_t>(std::strtoul(needValue("--tlb"), nullptr, 10));
+      cfg.mem.tlbEntries = static_cast<uint32_t>(number("--tlb", kU32));
     } else if (arg == "--line") {
-      cfg.mem.lineSize = static_cast<uint32_t>(std::strtoul(needValue("--line"), nullptr, 10));
+      cfg.mem.lineSize = static_cast<uint32_t>(number("--line", kU32));
     } else if (arg == "--icache") {
       if (!parseGeometry(needValue("--icache"), &cfg.mem.icacheSets, &cfg.mem.icacheWays)) {
         std::fprintf(stderr, "error: --icache wants SETSxWAYS\n");
@@ -113,19 +161,19 @@ int main(int argc, char** argv) {
         return 2;
       }
     } else if (arg == "--miss-penalty") {
-      cfg.mem.missPenalty = static_cast<uint32_t>(std::strtoul(needValue("--miss-penalty"), nullptr, 10));
+      cfg.mem.missPenalty = static_cast<uint32_t>(number("--miss-penalty", kU32));
     } else if (arg == "--prefault") {
       cfg.prefault = true;
     } else if (arg == "--fault-penalty") {
-      cfg.mem.pageFaultPenalty = static_cast<uint32_t>(std::strtoul(needValue("--fault-penalty"), nullptr, 10));
+      cfg.mem.pageFaultPenalty = static_cast<uint32_t>(number("--fault-penalty", kU32));
     } else if (arg == "--max-cycles") {
-      cfg.maxCycles = std::strtoull(needValue("--max-cycles"), nullptr, 10);
+      cfg.maxCycles = number("--max-cycles", kU64);
     } else if (arg == "--csv") {
       csvPath = needValue("--csv");
     } else if (arg == "--emit-trace") {
       cfg.tracePath = needValue("--emit-trace");
     } else if (arg == "--trace-cycles") {
-      cfg.traceMaxCycles = std::strtoull(needValue("--trace-cycles"), nullptr, 10);
+      cfg.traceMaxCycles = number("--trace-cycles", kU64);
     } else if (arg == "--dump-mem") {
       const std::string spec = needValue("--dump-mem");
       const size_t colon = spec.find(':');
@@ -133,8 +181,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "error: --dump-mem wants ADDR:COUNT\n");
         return 2;
       }
-      dumpAddr = static_cast<uint32_t>(std::strtoul(spec.c_str(), nullptr, 0));
-      dumpCount = static_cast<uint32_t>(std::strtoul(spec.c_str() + colon + 1, nullptr, 0));
+      uint64_t addr = 0, count = 0;
+      if (!parseUnsigned(spec.c_str(), spec.c_str() + colon, 0, kU32, &addr) ||
+          !parseUnsigned(spec.c_str() + colon + 1, 0, 1u << 20, &count)) {
+        std::fprintf(stderr, "error: --dump-mem wants ADDR:COUNT\n");
+        return 2;
+      }
+      dumpAddr = static_cast<uint32_t>(addr);
+      dumpCount = static_cast<uint32_t>(count);
     } else if (!arg.empty() && arg[0] == '-') {
       std::fprintf(stderr, "error: unknown option '%s'\n", arg.c_str());
       return 2;
@@ -145,6 +199,12 @@ int main(int argc, char** argv) {
 
   if (programs.empty()) {
     usage(argv[0]);
+    return 2;
+  }
+
+  const std::string configError = validateConfig(cfg);
+  if (!configError.empty()) {
+    std::fprintf(stderr, "error: %s\n", configError.c_str());
     return 2;
   }
 
